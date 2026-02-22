@@ -2,10 +2,14 @@
 yahoo_client.py — Yahoo Fantasy API wrapper.
 
 Data sources used:
-  • team.roster()                          → current slots, eligible positions
-  • /players;sort=AR;sort_type=lastmonth   → Yahoo's native 30-day rank + team_abbr
-  • /players;sort=AR;sort_type=lastweek    → Yahoo's native 7-day rank (14-day proxy)
-  • /players;player_keys=.../stats;type=…  → stat_id 0 (GP) + stat_id 2 (total MIN) → MPG
+  • team.roster()                                        → current slots, eligible positions
+  • /players;sort=AR;sort_type=lastmonth                 → global avg rank (30-day / 14-day)
+  • /players;player_keys=.../stats;type=…                → stat_id 0 (GP) + stat_id 2 (MIN) → MPG
+
+Rank note: Yahoo's displayed "Current" column uses a proprietary calculation that
+cannot be replicated via the API. We use sort=AR sort position as the rank, which
+is Yahoo's own average-rank sort order. Both roster and FA ranks come from the same
+sort=AR call (no status filter) so they're on the same scale.
 """
 
 import os
@@ -154,15 +158,17 @@ class YahooFantasyClient:
         # Build player_keys in Yahoo format  e.g. '466.p.5161'
         player_keys = [f"{self.game_id}.p.{p['player_id']}" for p in raw_roster]
 
-        # 1. True global ranks (no status filter = all players sorted by global AR)
+        # 1. Global average rank (sort=AR, no status filter = all players)
         #    30-day: sort_type=lastmonth  |  14-day: sort_type=biweekly
-        print("[yahoo_client]   Fetching global 30-day avg ranks …")
-        ranks_30 = self._fetch_yahoo_ranked_players("lastmonth", status="", count=400)
-        print("[yahoo_client]   Fetching global 14-day avg ranks …")
-        ranks_14 = self._fetch_yahoo_ranked_players("biweekly",  status="", count=400)
+        #    Both roster and FA use the same rank lists for consistency.
+        if not hasattr(self, "_cached_ranks_30"):
+            print("[yahoo_client]   Fetching global 30-day avg ranks …")
+            self._cached_ranks_30 = self._fetch_yahoo_ranked_players("lastmonth", status="", count=400)
+            print("[yahoo_client]   Fetching global 14-day avg ranks …")
+            self._cached_ranks_14 = self._fetch_yahoo_ranked_players("biweekly",  status="", count=400)
 
-        # Fallback direct fetch for any roster player not captured in global top-400
-        missing_keys = [k for k in player_keys if k not in ranks_30]
+        # Fallback direct fetch for any roster player not captured in top-400
+        missing_keys = [k for k in player_keys if k not in self._cached_ranks_30]
         player_info_fallback: dict = {}
         if missing_keys:
             print(f"[yahoo_client]   Fetching direct info for {len(missing_keys)} unranked roster players …")
@@ -200,8 +206,8 @@ class YahooFantasyClient:
             seen: set = set()
             eligible = [p for p in eligible if not (p in seen or seen.add(p))]
 
-            r30      = ranks_30.get(pkey, {})
-            r14      = ranks_14.get(pkey, {})
+            r30      = self._cached_ranks_30.get(pkey, {})
+            r14      = self._cached_ranks_14.get(pkey, {})
             gm       = gp_mpg.get(pkey, {})
             fallback = player_info_fallback.get(pkey, {})
 
@@ -231,70 +237,65 @@ class YahooFantasyClient:
         Return top free agents with TRUE global avg rank (comparable to roster ranks).
 
         Strategy:
-          1. Fetch global rank list (no status filter) — all players sorted by global AR.
+          1. Reuse the global rank lists from _fetch_yahoo_ranked_players() (same
+             source as get_my_roster) so roster and FA ranks are on identical scales.
           2. Fetch available-player keys (status=A) to know who is a FA in this league.
           3. Walk the global list in rank order; keep only FAs until we have `limit`.
-
-        This ensures FA ranks (e.g. 45) are on the same scale as roster ranks (e.g. 16),
-        so the waiver scanner comparisons are valid.
 
         Fields: player_id, player_key, name, positions, status, team_abbr,
                 yahoo_30day_rank, yahoo_14day_rank, mpg, games_last_30, percent_owned
         """
         print(f"[yahoo_client] Fetching top {limit} free agents …")
 
-        # How many global players to scan — must exceed rostered count to find `limit` FAs.
-        # 10-team × 16-player league ≈ 160 rostered; scan top 400 to be safe.
-        global_scan = max(400, limit * 3)
+        # Use the same Yahoo sort=AR rankings that get_my_roster() uses.
+        if not hasattr(self, "_cached_ranks_30"):
+            print("[yahoo_client]   Fetching global 30-day avg ranks …")
+            self._cached_ranks_30 = self._fetch_yahoo_ranked_players("lastmonth", status="", count=400)
+            print("[yahoo_client]   Fetching global 14-day avg ranks …")
+            self._cached_ranks_14 = self._fetch_yahoo_ranked_players("biweekly",  status="", count=400)
 
-        # 1. Global rank lists (all players, no status filter)
-        print("[yahoo_client]   Fetching global 30-day avg ranks …")
-        global_30 = self._fetch_yahoo_ranked_players("lastmonth", status="", count=global_scan)
-        print("[yahoo_client]   Fetching global 14-day avg ranks …")
-        global_14 = self._fetch_yahoo_ranked_players("biweekly",  status="", count=global_scan)
-
-        # 2. Identify which player_keys are available (FA) in this league
+        # Identify which player_keys are available (FA) in this league
         print("[yahoo_client]   Fetching available FA keys …")
-        fa_keys_30 = self._fetch_fa_keys("lastmonth", count=global_scan)
-        fa_keys_14 = self._fetch_fa_keys("biweekly",  count=global_scan)
-        # Union of both in case a player appears in only one
-        available_keys: set = fa_keys_30 | fa_keys_14
+        fa_keys = self._fetch_fa_keys("lastmonth", count=400)
 
-        # 3. Walk global 30-day list in rank order, keep only FAs
-        ordered_global = sorted(global_30.items(), key=lambda kv: kv[1]["rank"])
+        # Walk the cached 30-day rank list in rank order, keep only FAs
+        ordered = sorted(
+            self._cached_ranks_30.items(),
+            key=lambda kv: kv[1]["rank"],
+        )
 
-        # GP/MPG — only for FA players we'll actually include
-        fa_candidate_keys = [k for k, _ in ordered_global if k in available_keys][:limit]
+        # GP/MPG for FAs
+        fa_candidate_keys = [k for k, _ in ordered if k in fa_keys][:limit]
         print("[yahoo_client]   Fetching FA GP/MPG stats …")
         gp_mpg = self._fetch_gp_mpg(fa_candidate_keys, "lastmonth")
 
         fas = []
-        for pkey, r30 in ordered_global:
-            if pkey not in available_keys:
-                continue  # rostered player — skip
+        for pkey, info30 in ordered:
+            if pkey not in fa_keys:
+                continue
 
-            r14 = global_14.get(pkey, {})
-            gm  = gp_mpg.get(pkey, {})
+            info14 = self._cached_ranks_14.get(pkey, {})
+            gm     = gp_mpg.get(pkey, {})
 
-            raw_status = r30.get("injury_status", "")
+            raw_status = info30.get("injury_status", "")
             status = raw_status if raw_status in INJURY_STATUSES else "healthy"
 
-            eligible = r30.get("positions", [])
+            eligible = info30.get("positions", [])
             seen: set = set()
             eligible = [p for p in eligible if not (p in seen or seen.add(p))]
 
             fas.append({
-                "player_id":       r30.get("player_id", 0),
+                "player_id":       info30.get("player_id", 0),
                 "player_key":      pkey,
-                "name":            r30.get("name", "Unknown"),
+                "name":            info30.get("name", "Unknown"),
                 "positions":       eligible,
                 "status":          status,
-                "team_abbr":       r30.get("team_abbr", ""),
-                "yahoo_30day_rank": r30["rank"],          # true global rank
-                "yahoo_14day_rank": r14.get("rank", 999),  # true global 14-day rank
+                "team_abbr":       info30.get("team_abbr", ""),
+                "yahoo_30day_rank": info30.get("rank", 999),
+                "yahoo_14day_rank": info14.get("rank", 999),
                 "mpg":             gm.get("mpg", 0.0),
                 "games_last_30":   gm.get("gp", 0),
-                "percent_owned":   r30.get("percent_owned", 0.0),
+                "percent_owned":   info30.get("percent_owned", 0.0),
             })
 
             if len(fas) >= limit:
@@ -404,8 +405,8 @@ class YahooFantasyClient:
                         name = item["name"].get("full", "")
                     elif "editorial_team_abbr" in item:
                         team_abbr = item["editorial_team_abbr"]
-                    elif "status" in item and "status_full" not in item:
-                        injury_status = item.get("status", "")
+                    elif "status" in item:
+                        injury_status = item["status"]
                     elif "eligible_positions" in item:
                         raw_pos = item["eligible_positions"]
                         if isinstance(raw_pos, list):
@@ -497,8 +498,8 @@ class YahooFantasyClient:
                         name = item["name"].get("full", "")
                     elif "editorial_team_abbr" in item:
                         team_abbr = item["editorial_team_abbr"]
-                    elif "status" in item and "status_full" not in item:
-                        injury_status = item.get("status", "")
+                    elif "status" in item:
+                        injury_status = item["status"]
                     elif "eligible_positions" in item:
                         raw_pos = item["eligible_positions"]
                         if isinstance(raw_pos, list):
