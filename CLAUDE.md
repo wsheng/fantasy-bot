@@ -20,9 +20,11 @@ python weekly.py
 
 # Test individual modules (each has __main__ smoke tests)
 python yahoo_client.py      # OAuth + roster/FA fetch
-python nba_schedule.py      # Schedule API test
-python optimizer.py         # Optimizer with fake data
-python waiver_scanner.py    # Waiver scanner with fake data
+python nba_schedule.py      # Schedule API + weekly remaining games
+python bm_scraper.py        # Basketball Monster scrape (prints top 20)
+python name_matcher.py      # Fuzzy name matching smoke test
+python optimizer.py         # Optimizer with fake data (incl. BM scores)
+python waiver_scanner.py    # Waiver scanner with fake data (incl. BM scores)
 python il_manager.py        # IL flags with fake data
 python emailer.py           # Writes preview to /tmp/report_preview.html
 ```
@@ -36,10 +38,12 @@ No formal test suite — each module has inline `if __name__ == "__main__"` smok
 - `main.py` (daily 2:00 AM) — orchestrates all modules in sequence:
 
 ```
-main.py
+main.py (9 steps)
  ├─ Load untouchables.json (from Monday's weekly.py)
  ├─ yahoo_client.py    → OAuth2, fetch roster + top 150 free agents with global avg ranks
- ├─ nba_schedule.py    → ESPN API (fallback: nba_api) → set of teams playing today
+ ├─ nba_schedule.py    → ESPN API (fallback: nba_api) → today's games + weekly remaining games
+ ├─ bm_scraper.py      → Scrape Basketball Monster per-category value scores (cached 20h)
+ ├─ name_matcher.py    → Fuzzy-match BM names to Yahoo names, attach bm_score to player dicts
  ├─ optimizer.py       → Greedy lineup builder (most-restrictive slots first)
  ├─ il_manager.py      → Flag IL moves (read-only, never mutates roster)
  ├─ waiver_scanner.py  → Compare FAs vs active/bench for upgrade opportunities
@@ -47,8 +51,12 @@ main.py
 ```
 
 **Key design decisions:**
-- **Greedy optimizer** fills slots C→PG→SG→SF→PF→G→F→UTIL (most restrictive first). Untouchables get a -10,000 rank bonus to ensure they stay active.
-- **yahoo_client.py** is the largest/most complex module (~840 lines). It paginates Yahoo's `sort=AR` endpoint for global player rankings, fetches GP/MPG stats separately, and computes category-average ranks to match Yahoo's displayed rank.
+- **Basketball Monster (BM) as primary ranking signal.** BM provides per-category value scores for 9-cat leagues (higher = better). Used as primary sort key in optimizer and scoring metric in waiver scanner. Falls back to Yahoo rank when BM data is missing. FAs with negative BM scores (hurt your 9-cat value) are never recommended as upgrades over unscored players.
+- **BM scraper** caches to `bm_cache.json` (gitignored) with a 20-hour TTL. Falls back to stale cache on scrape failure.
+- **Name matcher** uses 3-tier strategy: exact normalized match → thefuzz ratio >= 90 → last-name + first-initial. Handles accents, Jr./Sr./III suffixes, C.J./CJ variants.
+- **Weekly remaining games** (`get_weekly_remaining_games()`) queries ESPN for each remaining day (today through Sunday). Used to compute `bm_weekly_value = bm_score * games_remaining` for bench waiver comparisons.
+- **Greedy optimizer** fills slots C→PG→SG→SF→PF→G→F→UTIL (most restrictive first). Untouchables get a +10,000 BM bonus (or -10,000 rank bonus in Yahoo fallback) to ensure they stay active.
+- **yahoo_client.py** is the largest/most complex module (~640 lines). It paginates Yahoo's `sort=AR` endpoint for global player rankings, fetches GP/MPG stats separately.
 - **9-cat league stats:** FG%, FT%, 3PTM, PTS, REB, AST, ST, BLK, TO (configured in `LEAGUE_CAT_IDS`)
 - **NBA schedule** uses a fallback chain: ESPN scoreboard API → nba_api → empty set
 - **IL manager** only flags moves, never executes them
@@ -56,10 +64,10 @@ main.py
 
 ## Credentials & Secrets
 
-All credentials live in `.env` and `oauth2.json` (both gitignored, file permissions 0o600). Never commit these. `untouchables.json` is also gitignored (auto-generated).
+All credentials live in `.env` and `oauth2.json` (both gitignored, file permissions 0o600). Never commit these. `untouchables.json` and `bm_cache.json` are also gitignored (auto-generated).
 
 Key env vars: `YAHOO_CLIENT_ID`, `YAHOO_CLIENT_SECRET`, `YAHOO_LEAGUE_ID`, `YAHOO_TEAM_NAME`, `GMAIL_USER`, `GMAIL_APP_PASSWORD`, `NOTIFY_EMAIL`, `YAHOO_USERNAME`, `YAHOO_PASSWORD`.
 
 ## Dependencies
 
-`requirements.txt`: yahoo-fantasy-api, yahoo-oauth, selenium, webdriver-manager, nba_api, python-dotenv, requests, beautifulsoup4. Python 3.11+.
+`requirements.txt`: yahoo-fantasy-api, yahoo-oauth, selenium, webdriver-manager, nba_api, python-dotenv, requests, beautifulsoup4, thefuzz, python-Levenshtein. Python 3.9+.
