@@ -1,9 +1,14 @@
 """
 optimizer.py — Daily lineup optimizer.
 
-Uses a greedy bipartite-matching approach: fill most-restrictive slots
-first (C, then positional slots, then flex slots), always choosing the
-highest-ranked eligible unassigned player.
+Uses a two-phase greedy approach:
+  Phase 1 (Stable): Fill PG, SG, SF, PF, C using 30-day avg rank
+          — consistent, reliable floor players.
+  Phase 2 (Flex):   Fill G, F, C, UTIL, UTIL using 14-day avg rank
+          — ride the hot hand for flexible slots.
+
+BM score remains the primary signal for both phases when available;
+the 30-day vs 14-day split applies to the Yahoo rank fallback.
 """
 
 from __future__ import annotations
@@ -40,12 +45,17 @@ SLOT_ELIGIBILITY: dict[str, list[str]] = {
 # Ideal bench shape: one guard, one forward, one centre
 TARGET_BENCH_SHAPE: dict[str, int] = {"G": 1, "F": 1, "C": 1}
 
-# Rank threshold — players outside top-N are flagged
-LOW_RANK_THRESHOLD = 96
+# Rank threshold for stable slots (5 stable × 12 teams = top 60)
+STABLE_LOW_RANK_THRESHOLD = 60
 
-# Slot fill order — most restrictive first so flex slots can absorb
-# any player that didn't fit elsewhere.
-FILL_ORDER: list[str] = ["C", "PG", "SG", "SF", "PF", "G", "F", "UTIL"]
+# Two-phase fill: stable slots use 30-day rank, flex slots use 14-day rank.
+# Each phase fills most-restrictive first within its group.
+STABLE_FILL_ORDER: list[tuple[str, int]] = [
+    ("C", 1), ("PG", 1), ("SG", 1), ("SF", 1), ("PF", 1),
+]
+FLEX_FILL_ORDER: list[tuple[str, int]] = [
+    ("C", 1), ("G", 1), ("F", 1), ("UTIL", 2),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -60,12 +70,14 @@ def _player_eligible_for_slot(player: dict, slot: str) -> bool:
     return any(pos in slot_requires for pos in eligible_positions)
 
 
-def _rank_sort_key(player: dict, untouchables: dict[str, float]) -> tuple:
+def _rank_sort_key(player: dict, untouchables: dict[str, float], *, use_14day: bool = False) -> tuple:
     """
     Sort key for player selection (lower = better).
 
     When a BM score is available, use its negation (higher BM value = better,
-    so negate for ascending sort). Fall back to Yahoo 30-day rank otherwise.
+    so negate for ascending sort). Fall back to Yahoo rank otherwise:
+      - use_14day=False (stable slots): fall back to 30-day rank
+      - use_14day=True  (flex slots):   fall back to 14-day rank
 
     Untouchables always sort first via a large bonus.
     """
@@ -77,7 +89,8 @@ def _rank_sort_key(player: dict, untouchables: dict[str, float]) -> tuple:
         effective = -(bm_score + (10_000 if is_untouchable else 0))
         return (effective,)
     else:
-        rank = player.get("yahoo_30day_rank", 999)
+        rank_key = "yahoo_14day_rank" if use_14day else "yahoo_30day_rank"
+        rank = player.get(rank_key, 999)
         bonus = -10_000 if is_untouchable else 0
         return (rank + bonus,)
 
@@ -88,6 +101,7 @@ def _best_player_for_slot(
     untouchables: dict[str, float],
     games_today: set[str],
     require_game_today: bool = True,
+    use_14day: bool = False,
 ) -> Optional[dict]:
     """
     Pick the best unassigned candidate for `slot`.
@@ -98,9 +112,7 @@ def _best_player_for_slot(
       3. Healthy/Q/DTD/GTD  without a game     — rest day
       4. INJ/O              without a game     — last resort
 
-    Rationale: An O-designated player who has a game today may have their
-    status updated during the day, so they are more valuable than a healthy
-    player who simply has no game scheduled.
+    use_14day: when True, rank by 14-day avg (flex slots); otherwise 30-day (stable slots).
     """
     eligible = [
         p for p in candidates if _player_eligible_for_slot(p, slot)
@@ -109,7 +121,7 @@ def _best_player_for_slot(
         return None
 
     if not require_game_today:
-        eligible.sort(key=lambda p: _rank_sort_key(p, untouchables))
+        eligible.sort(key=lambda p: _rank_sort_key(p, untouchables, use_14day=use_14day))
         return eligible[0]
 
     HARD_OUT = {"INJ", "O", "NA"}
@@ -127,7 +139,7 @@ def _best_player_for_slot(
 
     for tier in tiers:
         if tier:
-            tier.sort(key=lambda p: _rank_sort_key(p, untouchables))
+            tier.sort(key=lambda p: _rank_sort_key(p, untouchables, use_14day=use_14day))
             return tier[0]
 
     return None
@@ -193,38 +205,35 @@ def build_lineup(
     assigned_bench: list[dict] = []
 
     # ------------------------------------------------------------------
-    # Phase 1 — fill active slots in fill order
+    # Phase 1 (Stable) — fill PG, SG, SF, PF, first C using 30-day rank
+    # Phase 2 (Flex)   — fill G, F, second C, UTIL×2 using 14-day rank
     # ------------------------------------------------------------------
 
-    # Track which slots we've filled and how many times (for duplicate slots)
-    filled_slots: list[str] = []
-
-    for slot in FILL_ORDER:
-        # Count how many times this slot appears in ACTIVE_SLOTS
-        total_of_slot = ACTIVE_SLOTS.count(slot)
-        already_filled = filled_slots.count(slot)
-        remaining = total_of_slot - already_filled
-
-        for _ in range(remaining):
-            chosen = _best_player_for_slot(
-                slot, unassigned, untouchables, games_today, require_game_today=True
-            )
-            if chosen is None:
-                # Relax game-today requirement
+    def _fill_slots(fill_order: list[tuple[str, int]], use_14day: bool, is_stable: bool) -> None:
+        for slot, count in fill_order:
+            for _ in range(count):
                 chosen = _best_player_for_slot(
-                    slot, unassigned, untouchables, games_today, require_game_today=False
+                    slot, unassigned, untouchables, games_today,
+                    require_game_today=True, use_14day=use_14day,
                 )
-            if chosen is None:
-                continue
+                if chosen is None:
+                    chosen = _best_player_for_slot(
+                        slot, unassigned, untouchables, games_today,
+                        require_game_today=False, use_14day=use_14day,
+                    )
+                if chosen is None:
+                    continue
 
-            unassigned.remove(chosen)
-            filled_slots.append(slot)
+                unassigned.remove(chosen)
 
-            rank_30 = chosen.get("yahoo_30day_rank", 999)
-            rank_14 = chosen.get("yahoo_14day_rank", 999)
-            status = chosen.get("status", "healthy")
+                rank_30 = chosen.get("yahoo_30day_rank", 999)
+                rank_14 = chosen.get("yahoo_14day_rank", 999)
+                status = chosen.get("status", "healthy")
 
-            entry = {
+                # Stable slots flag on 30-day rank > 60; flex slots don't flag
+                flag_low = rank_30 > STABLE_LOW_RANK_THRESHOLD if is_stable else False
+
+                entry = {
                     "name": chosen["name"],
                     "slot": slot,
                     "rank_30day": rank_30,
@@ -232,13 +241,17 @@ def build_lineup(
                     "has_game_today": chosen.get("has_game_today", False),
                     "injury_status": status,
                     "is_untouchable": chosen["name"] in untouchables,
-                    "flag_low_rank": rank_30 > LOW_RANK_THRESHOLD,
+                    "flag_low_rank": flag_low,
                     "flag_injured": status in ("INJ", "O", "Q", "DTD") and slot not in ("IL", "IL+"),
                     "positions": chosen.get("positions", []),
+                    "slot_type": "stable" if is_stable else "flex",
                 }
-            if chosen.get("bm_score") is not None:
-                entry["bm_score"] = chosen["bm_score"]
-            assigned_active.append(entry)
+                if chosen.get("bm_score") is not None:
+                    entry["bm_score"] = chosen["bm_score"]
+                assigned_active.append(entry)
+
+    _fill_slots(STABLE_FILL_ORDER, use_14day=False, is_stable=True)
+    _fill_slots(FLEX_FILL_ORDER,   use_14day=True,  is_stable=False)
 
     # ------------------------------------------------------------------
     # Phase 2 — fill bench slots with remaining players
@@ -264,7 +277,7 @@ def build_lineup(
                 "has_game_today": player.get("has_game_today", False),
                 "injury_status": player.get("status", "healthy"),
                 "is_untouchable": player["name"] in untouchables,
-                "flag_low_rank": rank_30 > LOW_RANK_THRESHOLD,
+                "flag_low_rank": False,  # bench players aren't flagged
                 "positions": player.get("positions", []),
             }
         if player.get("bm_score") is not None:
@@ -407,8 +420,10 @@ if __name__ == "__main__":
         if p["is_untouchable"]:
             flags.append("UNTOUCHABLE")
         bm = f"bm={p.get('bm_score', '—')}" if 'bm_score' in p else ""
+        phase = p.get("slot_type", "?")
+        rank_display = f"rank30={p['rank_30day']:<4}" if phase == "stable" else f"rank14={p['rank_14day']:<4}"
         print(
-            f"  {p['slot']:<6} {p['name']:<25} rank30={p['rank_30day']:<4} "
+            f"  {p['slot']:<6} [{phase:<6}] {p['name']:<25} {rank_display} "
             f"game={'Y' if p['has_game_today'] else 'N'} {bm} {' '.join(flags)}"
         )
 

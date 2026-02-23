@@ -44,7 +44,7 @@ main.py (9 steps)
  ├─ nba_schedule.py    → ESPN API (fallback: nba_api) → today's games + weekly remaining games
  ├─ bm_scraper.py      → Scrape Basketball Monster per-category value scores (cached 20h)
  ├─ name_matcher.py    → Fuzzy-match BM names to Yahoo names, attach bm_score to player dicts
- ├─ optimizer.py       → Greedy lineup builder (most-restrictive slots first)
+ ├─ optimizer.py       → Two-phase lineup builder (stable 30-day + flex 14-day)
  ├─ il_manager.py      → Flag IL moves (read-only, never mutates roster)
  ├─ waiver_scanner.py  → Compare FAs vs active/bench for upgrade opportunities
  └─ emailer.py         → Build styled HTML email, send via Gmail SMTP
@@ -55,7 +55,11 @@ main.py (9 steps)
 - **BM scraper** caches to `bm_cache.json` (gitignored) with a 20-hour TTL. Falls back to stale cache on scrape failure.
 - **Name matcher** uses 3-tier strategy: exact normalized match → thefuzz ratio >= 90 → last-name + first-initial. Handles accents, Jr./Sr./III suffixes, C.J./CJ variants.
 - **Weekly remaining games** (`get_weekly_remaining_games()`) queries ESPN for each remaining day (today through Sunday). Used to compute `bm_weekly_value = bm_score * games_remaining` for bench waiver comparisons.
-- **Greedy optimizer** fills slots C→PG→SG→SF→PF→G→F→UTIL (most restrictive first). Untouchables get a +10,000 BM bonus (or -10,000 rank bonus in Yahoo fallback) to ensure they stay active.
+- **Two-phase optimizer** uses a stable/flex split:
+  - **Stable slots** (C, PG, SG, SF, PF): filled using **30-day avg rank** — consistent, reliable floor players. Flagged if rank > 60 (5 stable × 12 teams).
+  - **Flex slots** (C, G, F, UTIL, UTIL): filled using **14-day avg rank** — ride the hot hand. No low-rank flag (streaky players expected).
+  - BM score remains primary signal for both phases; the 30-day vs 14-day split applies to the Yahoo rank fallback.
+  - Untouchables get a +10,000 BM bonus (or -10,000 rank bonus in Yahoo fallback) to ensure they stay active.
 - **yahoo_client.py** is the largest/most complex module (~640 lines). It paginates Yahoo's `sort=AR` endpoint for global player rankings, fetches GP/MPG stats separately.
 - **9-cat league stats:** FG%, FT%, 3PTM, PTS, REB, AST, ST, BLK, TO (configured in `LEAGUE_CAT_IDS`)
 - **NBA schedule** uses a fallback chain: ESPN scoreboard API → nba_api → empty set
