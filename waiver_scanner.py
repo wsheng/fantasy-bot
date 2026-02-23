@@ -135,9 +135,6 @@ def scan_active_upgrades(
         fa_mpg = fa.get("mpg", 0.0)
         fa_bm = fa.get("bm_score")
 
-        # Compute comparable score: BM value if available, else inverse rank
-        fa_score = fa_bm if fa_bm is not None else (999 - fa_rank_30)
-
         # Find every active slot the FA could potentially fill
         for active_player in active_lineup:
             slot = active_player.get("slot", "")
@@ -146,9 +143,17 @@ def scan_active_upgrades(
 
             current_bm = active_player.get("bm_score")
             current_rank = active_player.get("rank_30day", 999)
-            current_score = current_bm if current_bm is not None else (999 - current_rank)
 
-            score_improvement = fa_score - current_score
+            # Compare using BM when both sides have it; fall back to rank
+            if fa_bm is not None and current_bm is not None:
+                score_improvement = fa_bm - current_bm
+            elif fa_bm is not None and fa_bm <= 0:
+                # FA has a negative BM score — don't recommend over unscored player
+                continue
+            else:
+                # Both unscored or only current has BM: use rank (lower=better)
+                score_improvement = current_rank - fa_rank_30
+
             if score_improvement <= 0:
                 continue  # FA is not better than current occupant
 
@@ -240,6 +245,9 @@ def scan_bench_upgrades(
             if fa_weekly is not None and bench_bm is not None:
                 bench_weekly = bench_bm * bench_games if bench_games else 0
                 improvement = fa_weekly - bench_weekly
+            elif fa_bm is not None and fa_bm <= 0:
+                # FA has a negative BM score — don't recommend over unscored player
+                continue
             else:
                 improvement = bench_rank_14 - fa_rank_14
 
