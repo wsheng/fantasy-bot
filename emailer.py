@@ -119,7 +119,7 @@ def _status_badge(status: str) -> str:
 
 def _build_active_lineup_section(active: list[dict]) -> str:
     rows = _section_header("✅ RECOMMENDED ACTIVE LINEUP")
-    rows += _col_header("Slot", "Player", "30-Day Rank", "14-Day Rank", "Game Today", "Status", "Flags")
+    rows += _col_header("Slot", "Player", "BM", "30-Day Rank", "14-Day Rank", "Game Today", "Status", "Flags")
 
     for i, p in enumerate(active):
         bg = COLOUR["bg_row_even"] if i % 2 == 0 else COLOUR["bg_row_odd"]
@@ -143,9 +143,13 @@ def _build_active_lineup_section(active: list[dict]) -> str:
         if p.get("flag_injured"):
             flags.append(_pill("INJURED", COLOUR["accent_red"]))
 
+        bm_str = f"{p['bm_score']:.1f}" if p.get("bm_score") is not None else "—"
+        bm_color = COLOUR["accent_blue"] if p.get("bm_score") is not None else COLOUR["text_muted"]
+
         cells = [
             _td(f"<strong>{p['slot']}</strong>"),
             _td(p["name"], bold=True),
+            _td(bm_str, color=bm_color, bold=p.get("bm_score") is not None),
             _td(str(p.get("rank_30day", "—")),
                 color=COLOUR["accent_green"] if p.get("rank_30day", 999) <= 50 else COLOUR["accent_red"]),
             _td(str(p.get("rank_14day", "—"))),
@@ -240,7 +244,7 @@ def _build_waiver_active_section(upgrades: list[dict]) -> str:
         return rows
 
     rows += _col_header(
-        "Add (FA)", "FA Rank (30d)", "MPG", "Drop", "Their Rank (30d)", "Slot", "+Ranks", "Notes"
+        "Add (FA)", "BM Score", "FA Rank (30d)", "MPG", "Drop", "Their Rank (30d)", "Slot", "+Improve", "Notes"
     )
 
     for i, u in enumerate(upgrades):
@@ -249,8 +253,11 @@ def _build_waiver_active_section(upgrades: list[dict]) -> str:
         if u.get("is_untouchable_replace"):
             notes = _pill("UNTOUCHABLE DROP", COLOUR["accent_red"])
 
+        bm_str = f"{u['fa_bm_score']:.1f}" if u.get("fa_bm_score") is not None else "—"
+
         cells = [
             _td(u["fa_name"], bold=True),
+            _td(bm_str, color=COLOUR["accent_blue"]),
             _td(str(u.get("fa_30day_rank", "—")), color=COLOUR["accent_green"]),
             _td(f"{u.get('fa_mpg', 0):.1f}"),
             _td(u.get("replace_player_name", "—")),
@@ -275,7 +282,7 @@ def _build_waiver_bench_section(upgrades: list[dict]) -> str:
         return rows
 
     rows += _col_header(
-        "Add (FA)", "FA Rank (14d)", "MPG", "Drop", "Their Rank (14d)", "Fit", "+Ranks", "Notes"
+        "Add (FA)", "BM Score", "Weekly Val", "FA Rank (14d)", "MPG", "Drop", "Their Rank (14d)", "Fit", "+Improve", "Notes"
     )
 
     for i, u in enumerate(upgrades):
@@ -284,8 +291,13 @@ def _build_waiver_bench_section(upgrades: list[dict]) -> str:
         if u.get("is_untouchable_replace"):
             notes = _pill("UNTOUCHABLE DROP", COLOUR["accent_red"])
 
+        bm_str = f"{u['fa_bm_score']:.1f}" if u.get("fa_bm_score") is not None else "—"
+        wv_str = f"{u['fa_weekly_value']:.1f}" if u.get("fa_weekly_value") is not None else "—"
+
         cells = [
             _td(u["fa_name"], bold=True),
+            _td(bm_str, color=COLOUR["accent_blue"]),
+            _td(wv_str, color=COLOUR["accent_blue"], bold=True),
             _td(str(u.get("fa_14day_rank", "—")), color=COLOUR["accent_green"]),
             _td(f"{u.get('fa_mpg', 0):.1f}"),
             _td(u.get("replace_player_name", "—")),
@@ -485,16 +497,19 @@ if __name__ == "__main__":
         "active_lineup": [
             {"name": "Shai Gilgeous-Alexander", "slot": "PG", "rank_30day": 1,
              "rank_14day": 2, "has_game_today": True, "injury_status": "healthy",
-             "is_untouchable": True, "flag_low_rank": False, "flag_injured": False},
+             "is_untouchable": True, "flag_low_rank": False, "flag_injured": False,
+             "bm_score": 11.2},
             {"name": "Devin Booker", "slot": "SG", "rank_30day": 18,
              "rank_14day": 15, "has_game_today": False, "injury_status": "healthy",
-             "is_untouchable": False, "flag_low_rank": False, "flag_injured": False},
+             "is_untouchable": False, "flag_low_rank": False, "flag_injured": False,
+             "bm_score": 4.8},
             {"name": "Jimmy Butler", "slot": "SF", "rank_30day": 110,
              "rank_14day": 105, "has_game_today": True, "injury_status": "O",
              "is_untouchable": False, "flag_low_rank": True, "flag_injured": True},
             {"name": "Nikola Jokic", "slot": "C", "rank_30day": 2,
              "rank_14day": 1, "has_game_today": True, "injury_status": "healthy",
-             "is_untouchable": True, "flag_low_rank": False, "flag_injured": False},
+             "is_untouchable": True, "flag_low_rank": False, "flag_injured": False,
+             "bm_score": 13.5},
         ],
         "bench": [
             {"name": "De'Aaron Fox", "slot": "BN", "rank_30day": 40,
@@ -518,7 +533,7 @@ if __name__ == "__main__":
              "fa_30day_rank": 25, "fa_mpg": 34.5, "fa_percent_owned": 72.0,
              "replace_player_name": "Jimmy Butler", "replace_player_rank": 110,
              "replace_slot": "SF", "rank_improvement": 85,
-             "is_untouchable_replace": False},
+             "is_untouchable_replace": False, "fa_bm_score": 5.8},
         ],
         "waiver_bench_upgrades": [],
         "alerts": [

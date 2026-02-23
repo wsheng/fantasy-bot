@@ -2,6 +2,7 @@
 .env
 oauth2.json
 untouchables.json
+bm_cache.json
 
 # Logs
 logs/

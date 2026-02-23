@@ -134,44 +134,83 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Step 1: Load untouchables
     # ------------------------------------------------------------------
-    log("Step 1/7  Loading untouchables …")
+    log("Step 1/9  Loading untouchables …")
     untouchables = _load_untouchables()
 
     # ------------------------------------------------------------------
     # Step 2: Initialise Yahoo client and fetch data
     # ------------------------------------------------------------------
-    log("Step 2/7  Initialising Yahoo Fantasy client …")
+    log("Step 2/9  Initialising Yahoo Fantasy client …")
     from yahoo_client import YahooFantasyClient
 
     client = YahooFantasyClient()
     client.refresh_token_if_needed()
 
-    log("Step 2/7  Fetching roster …")
+    log("Step 2/9  Fetching roster …")
     roster = client.get_my_roster()
     log(f"          Roster: {len(roster)} players.")
 
-    log("Step 2/7  Fetching free agents …")
+    log("Step 2/9  Fetching free agents …")
     free_agents = client.get_free_agents(limit=150)
     log(f"          Free agents: {len(free_agents)} players.")
 
     # ------------------------------------------------------------------
-    # Step 3: Get today's NBA schedule
+    # Step 3: Get today's NBA schedule + weekly remaining games
     # ------------------------------------------------------------------
-    log("Step 3/7  Fetching today's NBA schedule …")
-    from nba_schedule import get_todays_games
+    log("Step 3/9  Fetching today's NBA schedule …")
+    from nba_schedule import get_todays_games, get_weekly_remaining_games
 
     games_today = get_todays_games()
     log(f"          {len(games_today)} teams playing today: {sorted(games_today)}")
 
-    # Annotate roster players with has_game_today using team_abbr from Yahoo
+    log("Step 3/9  Fetching weekly remaining games …")
+    weekly_games = get_weekly_remaining_games()
+    log(f"          {len(weekly_games)} teams with remaining games this week.")
+
+    # Annotate roster players with has_game_today and games_remaining
     for player in roster:
         abbr = player.get("team_abbr", "").upper()
         player["has_game_today"] = bool(abbr and abbr in games_today)
+        player["games_remaining"] = weekly_games.get(abbr, 0)
+
+    # Annotate FAs with games_remaining
+    for fa in free_agents:
+        abbr = fa.get("team_abbr", "").upper()
+        fa["games_remaining"] = weekly_games.get(abbr, 0)
 
     # ------------------------------------------------------------------
-    # Step 4: Run optimizer
+    # Step 4: Scrape Basketball Monster rankings and attach scores
     # ------------------------------------------------------------------
-    log("Step 4/7  Running lineup optimizer …")
+    log("Step 4/9  Fetching Basketball Monster rankings …")
+    from bm_scraper import fetch_bm_rankings
+    from name_matcher import match_bm_to_yahoo
+
+    bm_players = fetch_bm_rankings()
+    log(f"          BM: {len(bm_players)} players scraped/cached.")
+
+    # Combine roster + FAs for name matching
+    all_players = roster + free_agents
+    bm_matches = match_bm_to_yahoo(bm_players, all_players)
+    log(f"          BM matched to {len(bm_matches)} Yahoo players.")
+
+    # Attach bm_score and bm_cat_values to roster and FA dicts
+    for player in roster + free_agents:
+        bm_data = bm_matches.get(player["name"])
+        if bm_data:
+            player["bm_score"] = bm_data["value"]
+            player["bm_cat_values"] = bm_data.get("cat_values", {})
+            # Compute weekly value for waiver comparisons
+            gr = player.get("games_remaining", 0)
+            player["bm_weekly_value"] = bm_data["value"] * gr if gr else 0.0
+
+    bm_roster_count = sum(1 for p in roster if p.get("bm_score") is not None)
+    bm_fa_count = sum(1 for p in free_agents if p.get("bm_score") is not None)
+    log(f"          BM scores attached: {bm_roster_count} roster, {bm_fa_count} FAs.")
+
+    # ------------------------------------------------------------------
+    # Step 5: Run optimizer
+    # ------------------------------------------------------------------
+    log("Step 5/9  Running lineup optimizer …")
     from optimizer import build_lineup, check_bench_shape
 
     lineup = build_lineup(roster, untouchables, games_today)
@@ -184,17 +223,17 @@ def main() -> None:
     log(f"          Bench shape: {bench_shape_desc}  target_met={bench_shape_met}")
 
     # ------------------------------------------------------------------
-    # Step 5: Run IL manager
+    # Step 6: Run IL manager
     # ------------------------------------------------------------------
-    log("Step 5/7  Checking IL flags …")
+    log("Step 6/9  Checking IL flags …")
     from il_manager import check_il_flags
 
     il_flags = check_il_flags(roster)
 
     # ------------------------------------------------------------------
-    # Step 6: Run waiver scanner
+    # Step 7: Run waiver scanner
     # ------------------------------------------------------------------
-    log("Step 6/7  Scanning waiver wire …")
+    log("Step 7/9  Scanning waiver wire …")
     from waiver_scanner import scan_active_upgrades, scan_bench_upgrades
 
     waiver_active = scan_active_upgrades(free_agents, active_lineup, untouchables)
@@ -202,9 +241,9 @@ def main() -> None:
     log(f"          Active upgrades: {len(waiver_active)}, Bench upgrades: {len(waiver_bench)}")
 
     # ------------------------------------------------------------------
-    # Step 7: Assemble report and send email
+    # Step 8: Assemble report and send email
     # ------------------------------------------------------------------
-    log("Step 7/7  Assembling report …")
+    log("Step 8/9  Assembling report …")
 
     alerts = _build_alerts(
         active_lineup, bench, il_flags, bench_shape_met, bench_shape_desc
@@ -229,7 +268,7 @@ def main() -> None:
         "alerts": alerts,
     }
 
-    log("Step 7/7  Sending email report …")
+    log("Step 9/9  Sending email report …")
     from emailer import send_daily_report
 
     send_daily_report(report_data, is_monday=is_monday)

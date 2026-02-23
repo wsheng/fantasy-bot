@@ -62,15 +62,24 @@ def _player_eligible_for_slot(player: dict, slot: str) -> bool:
 
 def _rank_sort_key(player: dict, untouchables: dict[str, float]) -> tuple:
     """
-    Sort key for player selection.
+    Sort key for player selection (lower = better).
 
-    Untouchables are given a large negative bonus so they are always
-    preferred over equivalent-ranked non-untouchables.
+    When a BM score is available, use its negation (higher BM value = better,
+    so negate for ascending sort). Fall back to Yahoo 30-day rank otherwise.
+
+    Untouchables always sort first via a large bonus.
     """
-    rank = player.get("yahoo_30day_rank", 999)
     is_untouchable = player["name"] in untouchables
-    bonus = -10_000 if is_untouchable else 0
-    return (rank + bonus,)
+    bm_score = player.get("bm_score")
+
+    if bm_score is not None:
+        # BM score: higher is better, so negate. Untouchable bonus: +10_000.
+        effective = -(bm_score + (10_000 if is_untouchable else 0))
+        return (effective,)
+    else:
+        rank = player.get("yahoo_30day_rank", 999)
+        bonus = -10_000 if is_untouchable else 0
+        return (rank + bonus,)
 
 
 def _best_player_for_slot(
@@ -215,8 +224,7 @@ def build_lineup(
             rank_14 = chosen.get("yahoo_14day_rank", 999)
             status = chosen.get("status", "healthy")
 
-            assigned_active.append(
-                {
+            entry = {
                     "name": chosen["name"],
                     "slot": slot,
                     "rank_30day": rank_30,
@@ -228,7 +236,9 @@ def build_lineup(
                     "flag_injured": status in ("INJ", "O", "Q", "DTD") and slot not in ("IL", "IL+"),
                     "positions": chosen.get("positions", []),
                 }
-            )
+            if chosen.get("bm_score") is not None:
+                entry["bm_score"] = chosen["bm_score"]
+            assigned_active.append(entry)
 
     # ------------------------------------------------------------------
     # Phase 2 — fill bench slots with remaining players
@@ -246,8 +256,7 @@ def build_lineup(
         rank_30 = player.get("yahoo_30day_rank", 999)
         rank_14 = player.get("yahoo_14day_rank", 999)
 
-        assigned_bench.append(
-            {
+        bench_entry = {
                 "name": player["name"],
                 "slot": "BN",
                 "rank_30day": rank_30,
@@ -258,7 +267,9 @@ def build_lineup(
                 "flag_low_rank": rank_30 > LOW_RANK_THRESHOLD,
                 "positions": player.get("positions", []),
             }
-        )
+        if player.get("bm_score") is not None:
+            bench_entry["bm_score"] = player["bm_score"]
+        assigned_bench.append(bench_entry)
 
     # ------------------------------------------------------------------
     # Phase 3 — format IL players
@@ -342,10 +353,10 @@ if __name__ == "__main__":
     fake_roster = [
         {"name": "Point Guard A", "positions": ["PG", "G"], "status": "healthy",
          "current_slot": "PG", "yahoo_30day_rank": 5, "yahoo_14day_rank": 4,
-         "has_game_today": True},
+         "has_game_today": True, "bm_score": 8.5},
         {"name": "Shooting Guard B", "positions": ["SG", "G"], "status": "healthy",
          "current_slot": "SG", "yahoo_30day_rank": 12, "yahoo_14day_rank": 10,
-         "has_game_today": True},
+         "has_game_today": True, "bm_score": 5.2},
         {"name": "Small Forward C", "positions": ["SF", "F"], "status": "healthy",
          "current_slot": "SF", "yahoo_30day_rank": 20, "yahoo_14day_rank": 18,
          "has_game_today": False},
@@ -395,9 +406,10 @@ if __name__ == "__main__":
             flags.append("INJURED")
         if p["is_untouchable"]:
             flags.append("UNTOUCHABLE")
+        bm = f"bm={p.get('bm_score', '—')}" if 'bm_score' in p else ""
         print(
             f"  {p['slot']:<6} {p['name']:<25} rank30={p['rank_30day']:<4} "
-            f"game={'Y' if p['has_game_today'] else 'N'} {' '.join(flags)}"
+            f"game={'Y' if p['has_game_today'] else 'N'} {bm} {' '.join(flags)}"
         )
 
     print("\n=== BENCH ===")

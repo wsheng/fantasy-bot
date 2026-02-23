@@ -8,7 +8,8 @@ Fallback: balldontlie public API.
 from __future__ import annotations
 
 import time
-from datetime import date
+from collections import Counter
+from datetime import date, timedelta
 from typing import Optional
 
 import requests
@@ -243,6 +244,38 @@ def get_player_team_abbr(player_name: str) -> Optional[str]:
     return None
 
 
+def get_weekly_remaining_games() -> dict[str, int]:
+    """
+    Return the number of remaining games this fantasy week per team.
+
+    Fantasy weeks run Mon-Sun. Queries ESPN for each remaining day
+    (today through Sunday) and counts games per team abbreviation.
+
+    Returns {"LAL": 3, "GSW": 2, ...}
+    """
+    today = date.today()
+    # Days until Sunday (Monday=0 ... Sunday=6)
+    days_until_sunday = (6 - today.weekday()) % 7
+    # Include today
+    remaining_dates = [today + timedelta(days=d) for d in range(days_until_sunday + 1)]
+
+    print(f"[nba_schedule] Fetching weekly remaining games for {len(remaining_dates)} days "
+          f"({remaining_dates[0]} to {remaining_dates[-1]}) …")
+
+    team_counts: Counter[str] = Counter()
+    for d in remaining_dates:
+        date_str = d.strftime("%Y-%m-%d")
+        teams = _get_games_from_espn(date_str)
+        if teams is None:
+            teams = _get_games_from_nba_api(date_str)
+        if teams:
+            team_counts.update(teams)
+
+    result = dict(team_counts)
+    print(f"[nba_schedule] Weekly games: {len(result)} teams with remaining games.")
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Quick test
 # ---------------------------------------------------------------------------
@@ -250,3 +283,8 @@ def get_player_team_abbr(player_name: str) -> Optional[str]:
 if __name__ == "__main__":
     games = get_todays_games()
     print(f"\nTeams with games today ({date.today()}): {sorted(games)}")
+
+    print("\n--- Weekly Remaining Games ---")
+    weekly = get_weekly_remaining_games()
+    for team, count in sorted(weekly.items(), key=lambda x: -x[1]):
+        print(f"  {team}: {count} games remaining this week")
