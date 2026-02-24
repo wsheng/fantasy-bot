@@ -6,6 +6,9 @@ on:
     - cron: '0 10 * * *'
   workflow_dispatch:
 
+env:
+  TZ: America/Los_Angeles
+
 jobs:
   optimize:
     runs-on: ubuntu-latest
