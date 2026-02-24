@@ -96,7 +96,7 @@ def _build_alerts(
     for p in low_rank_active:
         alerts.append(
             f"{p['name']} (slot {p['slot']}) has a 30-day rank of "
-            f"{p.get('rank_30day', '?')} — outside top 96."
+            f"{p.get('rank_30day', '?')} — outside top {STABLE_LOW_RANK_THRESHOLD}."
         )
 
     # Bench shape
@@ -211,7 +211,7 @@ def main() -> None:
     # Step 5: Run optimizer
     # ------------------------------------------------------------------
     log("Step 5/9  Running lineup optimizer …")
-    from optimizer import build_lineup, check_bench_shape
+    from optimizer import build_lineup, check_bench_shape, STABLE_LOW_RANK_THRESHOLD
 
     lineup = build_lineup(roster, untouchables, games_today)
     active_lineup = lineup["active"]
