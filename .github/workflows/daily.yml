@@ -1,0 +1,56 @@
+name: Daily Lineup Optimizer
+
+on:
+  schedule:
+    # 10:00 UTC = 2:00 AM PT
+    - cron: '0 10 * * *'
+  workflow_dispatch:
+
+jobs:
+  optimize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write .env from secrets
+        run: |
+          cat > .env << 'ENVEOF'
+          YAHOO_CLIENT_ID=${{ secrets.YAHOO_CONSUMER_KEY }}
+          YAHOO_CLIENT_SECRET=${{ secrets.YAHOO_CONSUMER_SECRET }}
+          YAHOO_LEAGUE_ID=${{ secrets.YAHOO_LEAGUE_ID }}
+          YAHOO_TEAM_NAME=${{ secrets.YAHOO_TEAM_NAME }}
+          GMAIL_USER=${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD=${{ secrets.GMAIL_APP_PASSWORD }}
+          NOTIFY_EMAIL=${{ secrets.NOTIFY_EMAIL }}
+          ENVEOF
+          chmod 600 .env
+
+      - name: Write oauth2.json from secrets
+        run: |
+          cat > oauth2.json << OAUTHEOF
+          {
+              "access_token": "",
+              "consumer_key": "${{ secrets.YAHOO_CONSUMER_KEY }}",
+              "consumer_secret": "${{ secrets.YAHOO_CONSUMER_SECRET }}",
+              "guid": null,
+              "refresh_token": "${{ secrets.YAHOO_REFRESH_TOKEN }}",
+              "token_time": 0,
+              "token_type": "bearer"
+          }
+          OAUTHEOF
+          chmod 600 oauth2.json
+
+      - name: Run daily optimizer
+        run: python main.py
