@@ -18,6 +18,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from optimizer import STABLE_LOW_RANK_THRESHOLD
+
 # ---------------------------------------------------------------------------
 # Logging helpers
 # ---------------------------------------------------------------------------
@@ -211,7 +213,7 @@ def main() -> None:
     # Step 5: Run optimizer
     # ------------------------------------------------------------------
     log("Step 5/9  Running lineup optimizer …")
-    from optimizer import build_lineup, check_bench_shape, STABLE_LOW_RANK_THRESHOLD
+    from optimizer import build_lineup, check_bench_shape
 
     lineup = build_lineup(roster, untouchables, games_today)
     active_lineup = lineup["active"]
