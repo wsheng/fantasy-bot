@@ -24,33 +24,47 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Write .env from secrets
+      - name: Write credentials from secrets
+        env:
+          YAHOO_CONSUMER_KEY: ${{ secrets.YAHOO_CONSUMER_KEY }}
+          YAHOO_CONSUMER_SECRET: ${{ secrets.YAHOO_CONSUMER_SECRET }}
+          YAHOO_REFRESH_TOKEN: ${{ secrets.YAHOO_REFRESH_TOKEN }}
+          YAHOO_LEAGUE_ID: ${{ secrets.YAHOO_LEAGUE_ID }}
+          YAHOO_TEAM_NAME: ${{ secrets.YAHOO_TEAM_NAME }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          NOTIFY_EMAIL: ${{ secrets.NOTIFY_EMAIL }}
         run: |
-          cat > .env << 'ENVEOF'
-          YAHOO_CLIENT_ID=${{ secrets.YAHOO_CONSUMER_KEY }}
-          YAHOO_CLIENT_SECRET=${{ secrets.YAHOO_CONSUMER_SECRET }}
-          YAHOO_LEAGUE_ID=${{ secrets.YAHOO_LEAGUE_ID }}
-          YAHOO_TEAM_NAME=${{ secrets.YAHOO_TEAM_NAME }}
-          GMAIL_USER=${{ secrets.GMAIL_USER }}
-          GMAIL_APP_PASSWORD=${{ secrets.GMAIL_APP_PASSWORD }}
-          NOTIFY_EMAIL=${{ secrets.NOTIFY_EMAIL }}
-          ENVEOF
-          chmod 600 .env
-
-      - name: Write oauth2.json from secrets
-        run: |
-          cat > oauth2.json << OAUTHEOF
-          {
-              "access_token": "",
-              "consumer_key": "${{ secrets.YAHOO_CONSUMER_KEY }}",
-              "consumer_secret": "${{ secrets.YAHOO_CONSUMER_SECRET }}",
-              "guid": null,
-              "refresh_token": "${{ secrets.YAHOO_REFRESH_TOKEN }}",
+          python - <<'PYEOF'
+          import json, os
+          # Write .env
+          env_keys = [
+              ("YAHOO_CLIENT_ID", "YAHOO_CONSUMER_KEY"),
+              ("YAHOO_CLIENT_SECRET", "YAHOO_CONSUMER_SECRET"),
+              ("YAHOO_LEAGUE_ID", "YAHOO_LEAGUE_ID"),
+              ("YAHOO_TEAM_NAME", "YAHOO_TEAM_NAME"),
+              ("GMAIL_USER", "GMAIL_USER"),
+              ("GMAIL_APP_PASSWORD", "GMAIL_APP_PASSWORD"),
+              ("NOTIFY_EMAIL", "NOTIFY_EMAIL"),
+          ]
+          with open(".env", "w") as f:
+              for dotenv_key, gh_key in env_keys:
+                  f.write(f"{dotenv_key}={os.environ[gh_key]}\n")
+          os.chmod(".env", 0o600)
+          # Write oauth2.json
+          oauth = {
+              "access_token": "expired",
+              "consumer_key": os.environ["YAHOO_CONSUMER_KEY"],
+              "consumer_secret": os.environ["YAHOO_CONSUMER_SECRET"],
+              "guid": None,
+              "refresh_token": os.environ["YAHOO_REFRESH_TOKEN"],
               "token_time": 0,
-              "token_type": "bearer"
+              "token_type": "bearer",
           }
-          OAUTHEOF
-          chmod 600 oauth2.json
+          with open("oauth2.json", "w") as f:
+              json.dump(oauth, f, indent=4)
+          os.chmod("oauth2.json", 0o600)
+          PYEOF
 
       - name: Run daily optimizer
         run: python main.py
