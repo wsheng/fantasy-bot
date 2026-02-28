@@ -1,11 +1,16 @@
 """
 optimizer.py — Daily lineup optimizer.
 
-Uses a two-phase greedy approach:
+Uses a two-phase greedy approach + game-day swap optimization:
   Phase 1 (Stable): Fill PG, SG, SF, PF, C using 30-day avg rank
           — consistent, reliable floor players.
   Phase 2 (Flex):   Fill G, F, C, UTIL, UTIL using 14-day avg rank
           — ride the hot hand for flexible slots.
+  Phase 3 (Swaps):  Swap bench players with games into active slots of
+          players without games, prioritizing slot expendability:
+            UTIL → G/F/C2 → PG/SG/SF/PF/C1
+          This keeps core starters stable and only displaces them as
+          a last resort.
 
 Hashtag Basketball (HT) z-score is the primary signal for both phases
 when available; the 30-day vs 14-day split applies to the rank fallback
@@ -29,6 +34,18 @@ ACTIVE_SLOTS: list[str] = [
 ]
 
 BENCH_SLOTS: list[str] = ["BN", "BN", "BN"]
+
+# Swap priority: when a bench player has a game and an active player doesn't,
+# prefer displacing active players in this order (most expendable first).
+# Tuples of (slot_name, slot_type) to distinguish C1 (stable) from C2 (flex).
+SWAP_PRIORITY: list[tuple[str, str]] = [
+    # Tier 1: UTILs — swap these out first
+    ("UTIL", "flex"),
+    # Tier 2: flex position slots
+    ("G", "flex"), ("F", "flex"), ("C", "flex"),
+    # Tier 3: core starters — last resort
+    ("PG", "stable"), ("SG", "stable"), ("SF", "stable"), ("PF", "stable"), ("C", "stable"),
+]
 
 # Which player positions are eligible for each roster slot
 SLOT_ELIGIBILITY: dict[str, list[str]] = {
@@ -104,17 +121,13 @@ def _best_player_for_slot(
     candidates: list[dict],
     untouchables: dict[str, float],
     games_today: set[str],
-    require_game_today: bool = True,
     use_14day: bool = False,
 ) -> Optional[dict]:
     """
-    Pick the best unassigned candidate for `slot`.
+    Pick the best unassigned candidate for `slot` by pure rank.
 
-    Preference order (when require_game_today=True):
-      1. Healthy/Q/DTD/GTD  WITH a game today  — start them
-      2. INJ/O              WITH a game today  — status might clear; keep on roster
-      3. Healthy/Q/DTD/GTD  without a game     — rest day
-      4. INJ/O              without a game     — last resort
+    Ignores game-today status — game-day swaps are handled in a
+    post-processing step that respects slot swap priority.
 
     use_14day: when True, rank by 14-day avg (flex slots); otherwise 30-day (stable slots).
     """
@@ -124,29 +137,8 @@ def _best_player_for_slot(
     if not eligible:
         return None
 
-    if not require_game_today:
-        eligible.sort(key=lambda p: _rank_sort_key(p, untouchables, use_14day=use_14day))
-        return eligible[0]
-
-    HARD_OUT = {"INJ", "O", "NA"}
-
-    tiers: list[list] = [
-        # tier 1: active status + game today
-        [p for p in eligible if p.get("has_game_today") and p.get("status") not in HARD_OUT],
-        # tier 2: out/injured + game today (may clear during the day)
-        [p for p in eligible if p.get("has_game_today") and p.get("status") in HARD_OUT],
-        # tier 3: active status + no game
-        [p for p in eligible if not p.get("has_game_today") and p.get("status") not in HARD_OUT],
-        # tier 4: out/injured + no game
-        [p for p in eligible if not p.get("has_game_today") and p.get("status") in HARD_OUT],
-    ]
-
-    for tier in tiers:
-        if tier:
-            tier.sort(key=lambda p: _rank_sort_key(p, untouchables, use_14day=use_14day))
-            return tier[0]
-
-    return None
+    eligible.sort(key=lambda p: _rank_sort_key(p, untouchables, use_14day=use_14day))
+    return eligible[0]
 
 
 # ---------------------------------------------------------------------------
@@ -218,13 +210,8 @@ def build_lineup(
             for _ in range(count):
                 chosen = _best_player_for_slot(
                     slot, unassigned, untouchables, games_today,
-                    require_game_today=True, use_14day=use_14day,
+                    use_14day=use_14day,
                 )
-                if chosen is None:
-                    chosen = _best_player_for_slot(
-                        slot, unassigned, untouchables, games_today,
-                        require_game_today=False, use_14day=use_14day,
-                    )
                 if chosen is None:
                     continue
 
@@ -256,6 +243,86 @@ def build_lineup(
 
     _fill_slots(STABLE_FILL_ORDER, use_14day=False, is_stable=True)
     _fill_slots(FLEX_FILL_ORDER,   use_14day=True,  is_stable=False)
+
+    # ------------------------------------------------------------------
+    # Game-day swap optimization
+    # ------------------------------------------------------------------
+    # Swap bench players who have games into active slots of players who
+    # don't, following SWAP_PRIORITY (UTIL first, then G/F/C2, then
+    # PG/SG/SF/PF/C1).  Preserves core starter stability.
+    # ------------------------------------------------------------------
+
+    HARD_OUT = {"INJ", "O", "NA"}
+
+    # Bench players with a game today, playable status, sorted best-first
+    bench_with_game = sorted(
+        [p for p in unassigned
+         if p.get("has_game_today") and p.get("status") not in HARD_OUT],
+        key=lambda p: _rank_sort_key(p, untouchables),
+    )
+
+    for bench_player in bench_with_game:
+        # Find the worst-ranked active player to displace, trying
+        # UTIL first, then G/F/C2, then PG/SG/SF/PF/C1.
+        best_swap_idx = None
+        for prio_slot, prio_type in SWAP_PRIORITY:
+            # Collect all candidates in this tier slot that qualify
+            candidates = []
+            for idx, active in enumerate(assigned_active):
+                if active["slot"] != prio_slot or active["slot_type"] != prio_type:
+                    continue
+                if active["has_game_today"]:
+                    continue
+                if not _player_eligible_for_slot(bench_player, prio_slot):
+                    continue
+                candidates.append(idx)
+            if candidates:
+                # Pick the worst-ranked (highest rank_sort_key) to displace
+                best_swap_idx = max(
+                    candidates,
+                    key=lambda i: _rank_sort_key(assigned_active[i], untouchables),
+                )
+                break
+
+        if best_swap_idx is not None:
+            displaced = assigned_active[best_swap_idx]
+            # Put bench player into the active slot
+            rank_30 = bench_player.get("yahoo_30day_rank", 999)
+            rank_14 = bench_player.get("yahoo_14day_rank", 999)
+            status = bench_player.get("status", "healthy")
+            is_stable = displaced["slot_type"] == "stable"
+
+            new_entry = {
+                "name": bench_player["name"],
+                "slot": displaced["slot"],
+                "rank_30day": rank_30,
+                "rank_14day": rank_14,
+                "has_game_today": True,
+                "injury_status": status,
+                "is_untouchable": bench_player["name"] in untouchables,
+                "flag_low_rank": rank_30 > STABLE_LOW_RANK_THRESHOLD if is_stable else False,
+                "flag_injured": status in ("INJ", "O", "Q", "DTD"),
+                "positions": bench_player.get("positions", []),
+                "slot_type": displaced["slot_type"],
+            }
+            if bench_player.get("ht_score") is not None:
+                new_entry["ht_score"] = bench_player["ht_score"]
+
+            assigned_active[best_swap_idx] = new_entry
+
+            # Move displaced player back to unassigned pool
+            # Reconstruct the original player dict from the displaced entry
+            unassigned.remove(bench_player)
+            unassigned.append({
+                "name": displaced["name"],
+                "positions": displaced.get("positions", []),
+                "status": displaced["injury_status"],
+                "has_game_today": displaced["has_game_today"],
+                "is_untouchable": displaced["is_untouchable"],
+                "yahoo_30day_rank": displaced["rank_30day"],
+                "yahoo_14day_rank": displaced["rank_14day"],
+                **({"ht_score": displaced["ht_score"]} if "ht_score" in displaced else {}),
+            })
 
     # ------------------------------------------------------------------
     # Phase 2 — fill bench slots with remaining players

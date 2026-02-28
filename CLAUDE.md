@@ -55,9 +55,10 @@ main.py (9 steps)
 - **HT scraper** caches to `ht_cache.json` (gitignored) with a 20-hour TTL. Falls back to stale cache on scrape failure. Scrapes via `requests` + `BeautifulSoup` (no Selenium needed). Uses ASP.NET form POSTs to switch time-period views.
 - **Name matcher** uses 3-tier strategy: exact normalized match → thefuzz ratio >= 90 → last-name + first-initial. Handles accents, Jr./Sr./III suffixes, C.J./CJ variants.
 - **Weekly remaining games** (`get_weekly_remaining_games()`) queries ESPN for each remaining day (today through Sunday). Used to compute `ht_weekly_value = ht_score * games_remaining` for bench waiver comparisons.
-- **Two-phase optimizer** uses a stable/flex split:
+- **Two-phase optimizer + game-day swaps** uses a stable/flex split with swap priority:
   - **Stable slots** (C, PG, SG, SF, PF): filled using **30-day avg rank** — consistent, reliable floor players. Flagged if rank > 60 (5 stable × 12 teams).
   - **Flex slots** (C, G, F, UTIL, UTIL): filled using **14-day avg rank** — ride the hot hand. No low-rank flag (streaky players expected).
+  - **Game-day swaps**: after filling by rank, bench players with games swap into active slots of players without games, following swap priority: **UTIL first → G/F/C2 → PG/SG/SF/PF/C1 last**. Core starters stay in place unless no other option exists.
   - HT z-score is primary signal for both phases; the 30-day vs 14-day split applies to the rank fallback (HT rank → Yahoo rank).
   - Untouchables get a +10,000 HT bonus (or -10,000 rank bonus in rank fallback) to ensure they stay active.
 - **yahoo_client.py** is the largest/most complex module (~640 lines). It paginates Yahoo's `sort=AR` endpoint for global player rankings, fetches GP/MPG stats separately.
