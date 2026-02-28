@@ -208,25 +208,37 @@ def _build_il_section(il_flags: dict) -> str:
         return rows
 
     rows = _section_header("🏥 IL FLAGS — ACTION REQUIRED")
-    rows += _col_header("Action", "Player", "Current Slot", "Status")
+    rows += _col_header("Action", "Player", "Current Slot", "Status", "Suggested Drop")
 
-    all_flags = (
-        [("Move to IL", p["name"], p["current_slot"], p["status"]) for p in move_to]
-        + [("Activate", p["name"], p["current_slot"], "healthy") for p in activate]
-    )
-
-    for i, (action, name, slot, status) in enumerate(all_flags):
-        bg = COLOUR["bg_danger"] if action == "Move to IL" else COLOUR["bg_success"]
-        action_badge = (
-            _pill("Move → IL", COLOUR["accent_red"])
-            if action == "Move to IL"
-            else _pill("Activate", COLOUR["accent_green"])
-        )
+    for i, p in enumerate(move_to):
+        bg = COLOUR["bg_danger"]
         cells = [
-            _td(action_badge),
-            _td(name, bold=True),
-            _td(slot),
-            _td(_status_badge(status)),
+            _td(_pill("Move → IL", COLOUR["accent_red"])),
+            _td(p["name"], bold=True),
+            _td(p["current_slot"]),
+            _td(_status_badge(p["status"])),
+            _td(""),
+        ]
+        rows += _row(cells, bg)
+
+    for i, p in enumerate(activate):
+        bg = COLOUR["bg_success"]
+        dc = p.get("drop_candidate")
+        if dc:
+            ht_str = f"{dc['ht_score']:.1f}" if dc.get("ht_score") is not None else "n/a"
+            rank_str = str(dc.get("rank_14day", "—"))
+            drop_text = (
+                f"<strong>{dc['name']}</strong> "
+                f"(HT: {ht_str}, rank14: {rank_str})"
+            )
+        else:
+            drop_text = '<span style="color:#999;">—</span>'
+        cells = [
+            _td(_pill("Activate", COLOUR["accent_green"])),
+            _td(p["name"], bold=True),
+            _td(p["current_slot"]),
+            _td(_status_badge("healthy")),
+            _td(drop_text),
         ]
         rows += _row(cells, bg)
 
@@ -526,7 +538,14 @@ if __name__ == "__main__":
                 {"name": "Jimmy Butler", "status": "O", "current_slot": "SF",
                  "action": "Move Jimmy Butler (SF) -> IL  [status: O]"},
             ],
-            "should_activate_from_il": [],
+            "should_activate_from_il": [
+                {"name": "Joel Embiid", "current_slot": "IL",
+                 "returning_positions": ["C"], "returning_ht_score": 8.5,
+                 "action": "Activate Joel Embiid from IL — consider dropping GG Jackson (HT: 1.2, rank14: 70)",
+                 "drop_candidate": {"name": "GG Jackson", "positions": ["SF", "PF"],
+                                    "ht_score": 1.2, "rank_14day": 70,
+                                    "reason": "HT: 1.2, rank14: 70, position overlap"}},
+            ],
         },
         "waiver_active_upgrades": [
             {"fa_name": "Franz Wagner", "fa_positions": ["SF", "F"],
