@@ -133,7 +133,7 @@ def scan_active_upgrades(
         fa_positions = fa.get("positions", [])
         fa_rank_30 = fa.get("yahoo_30day_rank", 999)
         fa_mpg = fa.get("mpg", 0.0)
-        fa_bm = fa.get("bm_score")
+        fa_ht = fa.get("ht_score")
 
         # Find every active slot the FA could potentially fill
         for active_player in active_lineup:
@@ -141,17 +141,17 @@ def scan_active_upgrades(
             if not _shares_slot_eligibility(fa_positions, slot):
                 continue
 
-            current_bm = active_player.get("bm_score")
+            current_ht = active_player.get("ht_score")
             current_rank = active_player.get("rank_30day", 999)
 
-            # Compare using BM when both sides have it; fall back to rank
-            if fa_bm is not None and current_bm is not None:
-                score_improvement = fa_bm - current_bm
-            elif fa_bm is not None and fa_bm <= 0:
-                # FA has a negative BM score — don't recommend over unscored player
+            # Compare using HT when both sides have it; fall back to rank
+            if fa_ht is not None and current_ht is not None:
+                score_improvement = fa_ht - current_ht
+            elif fa_ht is not None and fa_ht <= 0:
+                # FA has a negative HT score — don't recommend over unscored player
                 continue
             else:
-                # Both unscored or only current has BM: use rank (lower=better)
+                # Both unscored or only current has HT: use rank (lower=better)
                 score_improvement = current_rank - fa_rank_30
 
             if score_improvement <= 0:
@@ -169,8 +169,8 @@ def scan_active_upgrades(
                     "rank_improvement": round(score_improvement, 2),
                     "is_untouchable_replace": active_player["name"] in untouchables,
                 }
-            if fa_bm is not None:
-                opp["fa_bm_score"] = fa_bm
+            if fa_ht is not None:
+                opp["fa_ht_score"] = fa_ht
             opportunities.append(opp)
 
     # Deduplicate: keep best opportunity per FA (highest improvement)
@@ -220,13 +220,13 @@ def scan_bench_upgrades(
         fa_rank_14 = fa.get("yahoo_14day_rank", 999)
         fa_mpg = fa.get("mpg", 0.0)
         fa_bench_cat = _bench_category(fa_positions)
-        fa_bm = fa.get("bm_score")
+        fa_ht = fa.get("ht_score")
         fa_games = fa.get("games_remaining", 0)
-        fa_weekly = fa.get("bm_weekly_value")
+        fa_weekly = fa.get("ht_weekly_value")
 
-        # Weekly value for FA: bm_score * games_remaining (if available)
-        if fa_weekly is None and fa_bm is not None and fa_games:
-            fa_weekly = fa_bm * fa_games
+        # Weekly value for FA: ht_score * games_remaining (if available)
+        if fa_weekly is None and fa_ht is not None and fa_games:
+            fa_weekly = fa_ht * fa_games
 
         for bench_player in bench:
             bench_positions = bench_player.get("positions", [])
@@ -239,14 +239,14 @@ def scan_bench_upgrades(
                 if fa_bench_cat != bench_cat:
                     continue
 
-            # Use weekly value if both sides have BM data, else fall back to rank
-            bench_bm = bench_player.get("bm_score")
+            # Use weekly value if both sides have HT data, else fall back to rank
+            bench_ht = bench_player.get("ht_score")
             bench_games = bench_player.get("games_remaining", 0)
-            if fa_weekly is not None and bench_bm is not None:
-                bench_weekly = bench_bm * bench_games if bench_games else 0
+            if fa_weekly is not None and bench_ht is not None:
+                bench_weekly = bench_ht * bench_games if bench_games else 0
                 improvement = fa_weekly - bench_weekly
-            elif fa_bm is not None and fa_bm <= 0:
-                # FA has a negative BM score — don't recommend over unscored player
+            elif fa_ht is not None and fa_ht <= 0:
+                # FA has a negative HT score — don't recommend over unscored player
                 continue
             else:
                 improvement = bench_rank_14 - fa_rank_14
@@ -266,8 +266,8 @@ def scan_bench_upgrades(
                     "rank_improvement": round(improvement, 2),
                     "is_untouchable_replace": bench_player["name"] in untouchables,
                 }
-            if fa_bm is not None:
-                opp["fa_bm_score"] = fa_bm
+            if fa_ht is not None:
+                opp["fa_ht_score"] = fa_ht
             if fa_games:
                 opp["fa_games_remaining"] = fa_games
             if fa_weekly is not None:
@@ -293,18 +293,18 @@ def scan_bench_upgrades(
 if __name__ == "__main__":
     fake_active = [
         {"name": "Bench Guard", "slot": "PG", "rank_30day": 80, "rank_14day": 75,
-         "positions": ["PG", "G"], "bm_score": 1.5},
+         "positions": ["PG", "G"], "ht_score": 1.5},
         {"name": "Star Center", "slot": "C", "rank_30day": 3, "rank_14day": 4,
-         "positions": ["C"], "bm_score": 10.0},
+         "positions": ["C"], "ht_score": 10.0},
     ]
     fake_bench = [
         {"name": "Fringe Guard", "slot": "BN", "rank_30day": 110, "rank_14day": 115,
-         "positions": ["PG", "G"], "bm_score": 0.5, "games_remaining": 2},
+         "positions": ["PG", "G"], "ht_score": 0.5, "games_remaining": 2},
     ]
     fake_fas = [
         {"name": "Hot FA Guard", "positions": ["PG", "G"], "status": "healthy",
          "yahoo_30day_rank": 40, "yahoo_14day_rank": 35, "mpg": 32.0,
-         "games_last_30": 12, "percent_owned": 45.0, "bm_score": 4.2, "games_remaining": 3},
+         "games_last_30": 12, "percent_owned": 45.0, "ht_score": 4.2, "games_remaining": 3},
         {"name": "Injured FA", "positions": ["SF"], "status": "O",
          "yahoo_30day_rank": 20, "yahoo_14day_rank": 18, "mpg": 34.0,
          "games_last_30": 10, "percent_owned": 30.0},

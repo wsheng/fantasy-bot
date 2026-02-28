@@ -3,6 +3,8 @@
 oauth2.json
 untouchables.json
 bm_cache.json
+ht_cache.json
+yahoo_cookies.json
 
 # Logs
 logs/

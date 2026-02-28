@@ -181,33 +181,43 @@ def main() -> None:
         fa["games_remaining"] = weekly_games.get(abbr, 0)
 
     # ------------------------------------------------------------------
-    # Step 4: Scrape Basketball Monster rankings and attach scores
+    # Step 4: Scrape Hashtag Basketball rankings and attach scores
     # ------------------------------------------------------------------
-    log("Step 4/9  Fetching Basketball Monster rankings …")
-    from bm_scraper import fetch_bm_rankings
+    log("Step 4/9  Fetching Hashtag Basketball rankings …")
+    from hashtag_scraper import fetch_hashtag_rankings
     from name_matcher import match_bm_to_yahoo
 
-    bm_players = fetch_bm_rankings()
-    log(f"          BM: {len(bm_players)} players scraped/cached.")
+    ht_data = fetch_hashtag_rankings()
+    ht_players = ht_data["players"]
+    ht_ranks_30d = ht_data["ranks_30d"]
+    ht_ranks_14d = ht_data["ranks_14d"]
+    log(f"          HT: {len(ht_players)} players, {len(ht_ranks_30d)} 30d ranks, {len(ht_ranks_14d)} 14d ranks.")
 
     # Combine roster + FAs for name matching
     all_players = roster + free_agents
-    bm_matches = match_bm_to_yahoo(bm_players, all_players)
-    log(f"          BM matched to {len(bm_matches)} Yahoo players.")
+    ht_matches = match_bm_to_yahoo(ht_players, all_players)
+    log(f"          HT matched to {len(ht_matches)} Yahoo players.")
 
-    # Attach bm_score and bm_cat_values to roster and FA dicts
+    # Attach ht_score, ht_cat_values, and ht_rank_30d/14d to roster and FA dicts
     for player in roster + free_agents:
-        bm_data = bm_matches.get(player["name"])
-        if bm_data:
-            player["bm_score"] = bm_data["value"]
-            player["bm_cat_values"] = bm_data.get("cat_values", {})
-            # Compute weekly value for waiver comparisons
+        ht_match = ht_matches.get(player["name"])
+        if ht_match:
+            player["ht_score"] = ht_match["value"]
+            player["ht_cat_values"] = ht_match.get("cat_values", {})
+        # HT 30d/14d ranking positions (looked up by matched HT name)
+        ht_name = ht_match["name"] if ht_match else player["name"]
+        if ht_name in ht_ranks_30d:
+            player["ht_rank_30d"] = ht_ranks_30d[ht_name]
+        if ht_name in ht_ranks_14d:
+            player["ht_rank_14d"] = ht_ranks_14d[ht_name]
+        # Compute weekly value for waiver comparisons
+        if player.get("ht_score") is not None:
             gr = player.get("games_remaining", 0)
-            player["bm_weekly_value"] = bm_data["value"] * gr if gr else 0.0
+            player["ht_weekly_value"] = player["ht_score"] * gr if gr else 0.0
 
-    bm_roster_count = sum(1 for p in roster if p.get("bm_score") is not None)
-    bm_fa_count = sum(1 for p in free_agents if p.get("bm_score") is not None)
-    log(f"          BM scores attached: {bm_roster_count} roster, {bm_fa_count} FAs.")
+    ht_roster_count = sum(1 for p in roster if p.get("ht_score") is not None)
+    ht_fa_count = sum(1 for p in free_agents if p.get("ht_score") is not None)
+    log(f"          HT scores attached: {ht_roster_count} roster, {ht_fa_count} FAs.")
 
     # ------------------------------------------------------------------
     # Step 5: Run optimizer

@@ -7,8 +7,9 @@ Uses a two-phase greedy approach:
   Phase 2 (Flex):   Fill G, F, C, UTIL, UTIL using 14-day avg rank
           — ride the hot hand for flexible slots.
 
-BM score remains the primary signal for both phases when available;
-the 30-day vs 14-day split applies to the Yahoo rank fallback.
+Hashtag Basketball (HT) z-score is the primary signal for both phases
+when available; the 30-day vs 14-day split applies to the rank fallback
+(HT rank, then Yahoo rank).
 """
 
 from __future__ import annotations
@@ -74,23 +75,26 @@ def _rank_sort_key(player: dict, untouchables: dict[str, float], *, use_14day: b
     """
     Sort key for player selection (lower = better).
 
-    When a BM score is available, use its negation (higher BM value = better,
-    so negate for ascending sort). Fall back to Yahoo rank otherwise:
-      - use_14day=False (stable slots): fall back to 30-day rank
-      - use_14day=True  (flex slots):   fall back to 14-day rank
+    When an HT z-score is available, use its negation (higher = better,
+    so negate for ascending sort). Fall back to rank otherwise:
+      - use_14day=False (stable slots): HT 30d rank → Yahoo 30-day rank
+      - use_14day=True  (flex slots):   HT 14d rank → Yahoo 14-day rank
 
     Untouchables always sort first via a large bonus.
     """
     is_untouchable = player["name"] in untouchables
-    bm_score = player.get("bm_score")
+    ht_score = player.get("ht_score")
 
-    if bm_score is not None:
-        # BM score: higher is better, so negate. Untouchable bonus: +10_000.
-        effective = -(bm_score + (10_000 if is_untouchable else 0))
+    if ht_score is not None:
+        # HT z-score: higher is better, so negate. Untouchable bonus: +10_000.
+        effective = -(ht_score + (10_000 if is_untouchable else 0))
         return (effective,)
     else:
-        rank_key = "yahoo_14day_rank" if use_14day else "yahoo_30day_rank"
-        rank = player.get(rank_key, 999)
+        # Fallback: HT time-window rank if available, else Yahoo rank
+        if use_14day:
+            rank = player.get("ht_rank_14d", player.get("yahoo_14day_rank", 999))
+        else:
+            rank = player.get("ht_rank_30d", player.get("yahoo_30day_rank", 999))
         bonus = -10_000 if is_untouchable else 0
         return (rank + bonus,)
 
@@ -246,8 +250,8 @@ def build_lineup(
                     "positions": chosen.get("positions", []),
                     "slot_type": "stable" if is_stable else "flex",
                 }
-                if chosen.get("bm_score") is not None:
-                    entry["bm_score"] = chosen["bm_score"]
+                if chosen.get("ht_score") is not None:
+                    entry["ht_score"] = chosen["ht_score"]
                 assigned_active.append(entry)
 
     _fill_slots(STABLE_FILL_ORDER, use_14day=False, is_stable=True)
@@ -280,8 +284,8 @@ def build_lineup(
                 "flag_low_rank": False,  # bench players aren't flagged
                 "positions": player.get("positions", []),
             }
-        if player.get("bm_score") is not None:
-            bench_entry["bm_score"] = player["bm_score"]
+        if player.get("ht_score") is not None:
+            bench_entry["ht_score"] = player["ht_score"]
         assigned_bench.append(bench_entry)
 
     # ------------------------------------------------------------------
@@ -366,10 +370,10 @@ if __name__ == "__main__":
     fake_roster = [
         {"name": "Point Guard A", "positions": ["PG", "G"], "status": "healthy",
          "current_slot": "PG", "yahoo_30day_rank": 5, "yahoo_14day_rank": 4,
-         "has_game_today": True, "bm_score": 8.5},
+         "has_game_today": True, "ht_score": 8.5},
         {"name": "Shooting Guard B", "positions": ["SG", "G"], "status": "healthy",
          "current_slot": "SG", "yahoo_30day_rank": 12, "yahoo_14day_rank": 10,
-         "has_game_today": True, "bm_score": 5.2},
+         "has_game_today": True, "ht_score": 5.2},
         {"name": "Small Forward C", "positions": ["SF", "F"], "status": "healthy",
          "current_slot": "SF", "yahoo_30day_rank": 20, "yahoo_14day_rank": 18,
          "has_game_today": False},
@@ -419,7 +423,7 @@ if __name__ == "__main__":
             flags.append("INJURED")
         if p["is_untouchable"]:
             flags.append("UNTOUCHABLE")
-        bm = f"bm={p.get('bm_score', '—')}" if 'bm_score' in p else ""
+        bm = f"ht={p.get('ht_score', '—')}" if 'ht_score' in p else ""
         phase = p.get("slot_type", "?")
         rank_display = f"rank30={p['rank_30day']:<4}" if phase == "stable" else f"rank14={p['rank_14day']:<4}"
         print(
