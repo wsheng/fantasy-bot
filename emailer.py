@@ -91,18 +91,27 @@ def _pill(text: str, bg: str, fg: str = "#fff") -> str:
 # ---------------------------------------------------------------------------
 
 
-def _build_untouchables_section(untouchables: list[dict]) -> str:
-    if not untouchables:
+def _build_do_not_drop_section(dnd_list: list[dict]) -> str:
+    if not dnd_list:
         return ""
 
-    rows = _section_header("📋 WEEKLY UNTOUCHABLES (Do Not Drop)")
-    rows += _col_header("Player", "MVP %")
+    rows = _section_header("🛡️ DO NOT DROP (Top 6 by Composite Rank)")
+    rows += _col_header("Player", "Composite", "HT Z-Score", "HT Szn", "HT 30d", "HT 14d")
 
-    for i, player in enumerate(untouchables):
+    for i, player in enumerate(dnd_list):
         bg = COLOUR["bg_untouchable"]
+        ht = player.get("ht_score")
+        szn = player.get("ht_season_rank")
+        r30 = player.get("ht_rank_30d")
+        r14 = player.get("ht_rank_14d")
+        comp = player.get("composite", 999)
         cells = [
             _td(f"⭐ {player['name']}", bold=True),
-            _td(f"{player.get('mvp_percent', 0):.1f}%", color=COLOUR["accent_yellow"]),
+            _td(f"{comp:.1f}"),
+            _td(f"{ht:.2f}" if ht is not None else "—"),
+            _td(str(szn) if szn is not None else "—"),
+            _td(str(r30) if r30 is not None else "—"),
+            _td(str(r14) if r14 is not None else "—"),
         ]
         rows += _row(cells, bg)
 
@@ -339,7 +348,11 @@ def _build_alerts_section(alerts: list[str]) -> str:
 
     for i, alert in enumerate(alerts):
         bg = COLOUR["bg_alert"] if i % 2 == 0 else COLOUR["bg_row_odd"]
-        rows += _row([_td(f"⚠️ {alert}")], bg)
+        rows += (
+            f'<tr style="background:{bg};">'
+            f'<td colspan="99" style="padding:7px 12px;font-size:13px;">⚠️ {alert}</td>'
+            f'</tr>'
+        )
 
     return rows
 
@@ -349,13 +362,13 @@ def _build_alerts_section(alerts: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def build_html_report(report_data: dict, is_monday: bool = False) -> str:
+def build_html_report(report_data: dict) -> str:
     """
     Assemble the full HTML email body from report_data.
 
     report_data keys:
         date                    – date string (YYYY-MM-DD)
-        untouchables            – list of {name, mvp_percent}  [Monday only]
+        do_not_drop             – list of {name, composite, ht_score, ...}
         active_lineup           – list from optimizer
         bench                   – list from optimizer
         bench_shape_desc        – str from check_bench_shape
@@ -366,13 +379,11 @@ def build_html_report(report_data: dict, is_monday: bool = False) -> str:
         alerts                  – list of plain-text alert strings
     """
     report_date = report_data.get("date", str(date.today()))
-    day_label = "(MONDAY)" if is_monday else ""
 
     # Build table body rows
     body_rows = ""
 
-    if is_monday:
-        body_rows += _build_untouchables_section(report_data.get("untouchables", []))
+    body_rows += _build_do_not_drop_section(report_data.get("do_not_drop", []))
 
     body_rows += _build_active_lineup_section(report_data.get("active_lineup", []))
     body_rows += _build_bench_section(
@@ -404,7 +415,7 @@ def build_html_report(report_data: dict, is_monday: bool = False) -> str:
         <tr>
           <td style="background:{COLOUR["bg_header"]};padding:20px 24px;">
             <p style="margin:0;font-size:22px;font-weight:800;color:#fff;letter-spacing:0.5px;">
-              🏀 Fantasy Hoops Daily Report {day_label}
+              🏀 Fantasy Hoops Daily Report
             </p>
             <p style="margin:4px 0 0;font-size:13px;color:#a8c6e8;">
               {report_date} &nbsp;·&nbsp; Generated automatically
@@ -447,7 +458,7 @@ def build_html_report(report_data: dict, is_monday: bool = False) -> str:
 # ---------------------------------------------------------------------------
 
 
-def send_daily_report(report_data: dict, is_monday: bool = False) -> None:
+def send_daily_report(report_data: dict) -> None:
     """
     Build and send the daily HTML report via Gmail SMTP (SSL port 465).
 
@@ -461,11 +472,10 @@ def send_daily_report(report_data: dict, is_monday: bool = False) -> None:
     notify_email = os.environ["NOTIFY_EMAIL"]
 
     report_date = report_data.get("date", str(date.today()))
-    monday_tag = " (MONDAY)" if is_monday else ""
-    subject = f"Fantasy Hoops Report — {report_date}{monday_tag}"
+    subject = f"Fantasy Hoops Report — {report_date}"
 
     print(f"[emailer] Building HTML report …")
-    html_body = build_html_report(report_data, is_monday=is_monday)
+    html_body = build_html_report(report_data)
 
     # Assemble MIME message
     msg = MIMEMultipart("alternative")
@@ -506,9 +516,13 @@ def send_daily_report(report_data: dict, is_monday: bool = False) -> None:
 if __name__ == "__main__":
     sample_report = {
         "date": str(date.today()),
-        "untouchables": [
-            {"name": "Nikola Jokic", "mvp_percent": 97.3},
-            {"name": "Shai Gilgeous-Alexander", "mvp_percent": 91.0},
+        "do_not_drop": [
+            {"name": "Nikola Jokic", "composite": 1.7,
+             "ht_score": 16.16, "ht_season_rank": 1, "ht_rank_30d": 1, "ht_rank_14d": 2},
+            {"name": "Shai Gilgeous-Alexander", "composite": 1.3,
+             "ht_score": 13.84, "ht_season_rank": 2, "ht_rank_30d": 2, "ht_rank_14d": 1},
+            {"name": "Hot Pickup", "composite": 35.2,
+             "ht_score": 4.2, "ht_season_rank": 42, "ht_rank_30d": 38, "ht_rank_14d": 35},
         ],
         "active_lineup": [
             {"name": "Shai Gilgeous-Alexander", "slot": "PG", "rank_30day": 1,
@@ -565,7 +579,7 @@ if __name__ == "__main__":
         ],
     }
 
-    html = build_html_report(sample_report, is_monday=True)
+    html = build_html_report(sample_report)
     preview_path = "/tmp/report_preview.html"
     with open(preview_path, "w") as f:
         f.write(html)

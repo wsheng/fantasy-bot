@@ -1,25 +1,45 @@
 """
 optimizer.py — Daily lineup optimizer.
 
-Uses a two-phase greedy approach + game-day swap optimization:
-  Phase 1 (Stable): Fill PG, SG, SF, PF, C using 30-day avg rank
-          — consistent, reliable floor players.
-  Phase 2 (Flex):   Fill G, F, C, UTIL, UTIL using 14-day avg rank
-          — ride the hot hand for flexible slots.
+Uses a three-tier greedy approach + game-day swap optimization:
+  Phase 1 (Stable): Fill PG, SG, SF, PF, C using weighted composite
+          (40% season rank + 60% 30-day rank) — consistent, reliable floor.
+  Phase 2 (Flex):   Fill G, F, C using weighted composite
+          (40% season rank + 60% 14-day rank) — moderate recency bias.
+  Phase 2b (Util):  Fill UTIL×2 using weighted composite
+          (20% season rank + 80% 14-day rank) — ride the hot hand.
   Phase 3 (Swaps):  Swap bench players with games into active slots of
           players without games, prioritizing slot expendability:
             UTIL → G/F/C2 → PG/SG/SF/PF/C1
           This keeps core starters stable and only displaces them as
           a last resort.
 
-Hashtag Basketball (HT) z-score is the primary signal for both phases
-when available; the 30-day vs 14-day split applies to the rank fallback
-(HT rank, then Yahoo rank).
+Composite rank formula: α × season_rank + (1-α) × window_rank (lower = better).
+Season rank is derived from HT z-score list position (ht_season_rank).
+Window rank uses HT 30d/14d rank → Yahoo rank → 999 as fallback chain.
 """
 
 from __future__ import annotations
 
 from typing import Optional
+
+# ---------------------------------------------------------------------------
+# Tier definitions for composite ranking
+# ---------------------------------------------------------------------------
+
+TIER_STABLE = "stable"   # PG, SG, SF, PF, C1
+TIER_FLEX = "flex"        # G, F, C2
+TIER_UTIL = "util"        # UTIL × 2, bench
+
+# (α_season, α_window, window_field)
+# composite = α_season × season_rank + α_window × window_rank
+TIER_WEIGHTS: dict[str, tuple[float, float, str]] = {
+    TIER_STABLE: (0.4, 0.6, "30d"),
+    TIER_FLEX:   (0.4, 0.6, "14d"),
+    TIER_UTIL:   (0.2, 0.8, "14d"),
+}
+
+DEFAULT_RANK = 999  # Fallback when rank data is missing
 
 # ---------------------------------------------------------------------------
 # Slot / position definitions
@@ -66,14 +86,31 @@ TARGET_BENCH_SHAPE: dict[str, int] = {"G": 1, "F": 1, "C": 1}
 # Rank threshold for stable slots (5 stable × 12 teams = top 60)
 STABLE_LOW_RANK_THRESHOLD = 60
 
-# Two-phase fill: stable slots use 30-day rank, flex slots use 14-day rank.
+# Three-tier fill: stable slots, flex slots, util slots.
 # Each phase fills most-restrictive first within its group.
 STABLE_FILL_ORDER: list[tuple[str, int]] = [
     ("C", 1), ("PG", 1), ("SG", 1), ("SF", 1), ("PF", 1),
 ]
 FLEX_FILL_ORDER: list[tuple[str, int]] = [
-    ("C", 1), ("G", 1), ("F", 1), ("UTIL", 2),
+    ("C", 1), ("G", 1), ("F", 1),
 ]
+UTIL_FILL_ORDER: list[tuple[str, int]] = [
+    ("UTIL", 2),
+]
+
+# Display order: Yahoo website standard (PG → SG → G → SF → PF → F → C → C → UTIL × 2)
+DISPLAY_ORDER: dict[tuple[str, str], int] = {
+    ("PG", "stable"): 0,
+    ("SG", "stable"): 1,
+    ("G", "flex"):    2,
+    ("SF", "stable"): 3,
+    ("PF", "stable"): 4,
+    ("F", "flex"):    5,
+    ("C", "stable"):  6,
+    ("C", "flex"):    7,
+    ("UTIL", "flex"): 8,   # first UTIL
+    ("UTIL", "util"): 8,   # both UTILs at same priority (stable order)
+}
 
 
 # ---------------------------------------------------------------------------
@@ -88,32 +125,29 @@ def _player_eligible_for_slot(player: dict, slot: str) -> bool:
     return any(pos in slot_requires for pos in eligible_positions)
 
 
-def _rank_sort_key(player: dict, untouchables: dict[str, float], *, use_14day: bool = False) -> tuple:
+def _rank_sort_key(player: dict, untouchables: dict[str, float], *, tier: str = TIER_UTIL) -> tuple:
     """
     Sort key for player selection (lower = better).
 
-    When an HT z-score is available, use its negation (higher = better,
-    so negate for ascending sort). Fall back to rank otherwise:
-      - use_14day=False (stable slots): HT 30d rank → Yahoo 30-day rank
-      - use_14day=True  (flex slots):   HT 14d rank → Yahoo 14-day rank
+    Uses a weighted composite: α × season_rank + (1-α) × window_rank.
+    Tier determines the weights and which window (30d vs 14d) to use.
 
     Untouchables always sort first via a large bonus.
     """
-    is_untouchable = player["name"] in untouchables
-    ht_score = player.get("ht_score")
+    alpha_season, alpha_window, window = TIER_WEIGHTS[tier]
 
-    if ht_score is not None:
-        # HT z-score: higher is better, so negate. Untouchable bonus: +10_000.
-        effective = -(ht_score + (10_000 if is_untouchable else 0))
-        return (effective,)
+    # Season rank: position in HT z-score list (attached by main.py)
+    season_rank = player.get("ht_season_rank", DEFAULT_RANK)
+
+    # Window rank: HT time-window rank → Yahoo rank → 999
+    if window == "30d":
+        window_rank = player.get("ht_rank_30d", player.get("yahoo_30day_rank", DEFAULT_RANK))
     else:
-        # Fallback: HT time-window rank if available, else Yahoo rank
-        if use_14day:
-            rank = player.get("ht_rank_14d", player.get("yahoo_14day_rank", 999))
-        else:
-            rank = player.get("ht_rank_30d", player.get("yahoo_30day_rank", 999))
-        bonus = -10_000 if is_untouchable else 0
-        return (rank + bonus,)
+        window_rank = player.get("ht_rank_14d", player.get("yahoo_14day_rank", DEFAULT_RANK))
+
+    composite = alpha_season * season_rank + alpha_window * window_rank
+    bonus = -10_000 if player["name"] in untouchables else 0
+    return (composite + bonus,)
 
 
 def _best_player_for_slot(
@@ -121,15 +155,13 @@ def _best_player_for_slot(
     candidates: list[dict],
     untouchables: dict[str, float],
     games_today: set[str],
-    use_14day: bool = False,
+    tier: str = TIER_UTIL,
 ) -> Optional[dict]:
     """
-    Pick the best unassigned candidate for `slot` by pure rank.
+    Pick the best unassigned candidate for `slot` by composite rank.
 
     Ignores game-today status — game-day swaps are handled in a
     post-processing step that respects slot swap priority.
-
-    use_14day: when True, rank by 14-day avg (flex slots); otherwise 30-day (stable slots).
     """
     eligible = [
         p for p in candidates if _player_eligible_for_slot(p, slot)
@@ -137,8 +169,18 @@ def _best_player_for_slot(
     if not eligible:
         return None
 
-    eligible.sort(key=lambda p: _rank_sort_key(p, untouchables, use_14day=use_14day))
+    eligible.sort(key=lambda p: _rank_sort_key(p, untouchables, tier=tier))
     return eligible[0]
+
+
+def _tier_for_entry(entry: dict) -> str:
+    """Derive the ranking tier from an assigned active entry."""
+    slot_type = entry.get("slot_type", "flex")
+    if slot_type == "stable":
+        return TIER_STABLE
+    if entry["slot"] == "UTIL":
+        return TIER_UTIL
+    return TIER_FLEX
 
 
 # ---------------------------------------------------------------------------
@@ -205,12 +247,14 @@ def build_lineup(
     # Phase 2 (Flex)   — fill G, F, second C, UTIL×2 using 14-day rank
     # ------------------------------------------------------------------
 
-    def _fill_slots(fill_order: list[tuple[str, int]], use_14day: bool, is_stable: bool) -> None:
+    def _fill_slots(fill_order: list[tuple[str, int]], tier: str) -> None:
+        slot_type = "stable" if tier == TIER_STABLE else "flex"
+        is_stable = tier == TIER_STABLE
         for slot, count in fill_order:
             for _ in range(count):
                 chosen = _best_player_for_slot(
                     slot, unassigned, untouchables, games_today,
-                    use_14day=use_14day,
+                    tier=tier,
                 )
                 if chosen is None:
                     continue
@@ -221,7 +265,7 @@ def build_lineup(
                 rank_14 = chosen.get("yahoo_14day_rank", 999)
                 status = chosen.get("status", "healthy")
 
-                # Stable slots flag on 30-day rank > 60; flex slots don't flag
+                # Stable slots flag on 30-day rank > 60; others don't flag
                 flag_low = rank_30 > STABLE_LOW_RANK_THRESHOLD if is_stable else False
 
                 entry = {
@@ -235,19 +279,24 @@ def build_lineup(
                     "flag_low_rank": flag_low,
                     "flag_injured": status in ("INJ", "O", "Q", "DTD") and slot not in ("IL", "IL+"),
                     "positions": chosen.get("positions", []),
-                    "slot_type": "stable" if is_stable else "flex",
+                    "slot_type": slot_type,
                 }
                 if chosen.get("ht_score") is not None:
                     entry["ht_score"] = chosen["ht_score"]
+                if chosen.get("ht_season_rank") is not None:
+                    entry["ht_season_rank"] = chosen["ht_season_rank"]
                 assigned_active.append(entry)
 
-    _fill_slots(STABLE_FILL_ORDER, use_14day=False, is_stable=True)
-    _fill_slots(FLEX_FILL_ORDER,   use_14day=True,  is_stable=False)
+    _fill_slots(STABLE_FILL_ORDER, tier=TIER_STABLE)
+    _fill_slots(FLEX_FILL_ORDER,   tier=TIER_FLEX)
+    _fill_slots(UTIL_FILL_ORDER,   tier=TIER_UTIL)
 
     # Snapshot the rank-based lineup before game-day swaps.
-    # These are the "true" starters/non-starters for waiver comparison.
+    # Starters (5 stable slots) → active-upgrade comparison.
+    # Non-starters (flex/util active + unassigned bench) → bench-upgrade comparison.
     import copy
-    rank_active = copy.deepcopy(assigned_active)
+    rank_active = copy.deepcopy([e for e in assigned_active if e["slot_type"] == "stable"])
+    rank_nonstarter_active = [e for e in assigned_active if e["slot_type"] != "stable"]
     rank_bench_players = list(unassigned)  # will be formatted after swaps
 
     # ------------------------------------------------------------------
@@ -261,10 +310,11 @@ def build_lineup(
     HARD_OUT = {"INJ", "O", "NA"}
 
     # Bench players with a game today, playable status, sorted best-first
+    # Use TIER_UTIL weights for bench players (most recency-biased)
     bench_with_game = sorted(
         [p for p in unassigned
          if p.get("has_game_today") and p.get("status") not in HARD_OUT],
-        key=lambda p: _rank_sort_key(p, untouchables),
+        key=lambda p: _rank_sort_key(p, untouchables, tier=TIER_UTIL),
     )
 
     for bench_player in bench_with_game:
@@ -284,9 +334,13 @@ def build_lineup(
                 candidates.append(idx)
             if candidates:
                 # Pick the worst-ranked (highest rank_sort_key) to displace
+                # Use each active entry's own tier for fair comparison
                 best_swap_idx = max(
                     candidates,
-                    key=lambda i: _rank_sort_key(assigned_active[i], untouchables),
+                    key=lambda i: _rank_sort_key(
+                        assigned_active[i], untouchables,
+                        tier=_tier_for_entry(assigned_active[i]),
+                    ),
                 )
                 break
 
@@ -313,13 +367,15 @@ def build_lineup(
             }
             if bench_player.get("ht_score") is not None:
                 new_entry["ht_score"] = bench_player["ht_score"]
+            if bench_player.get("ht_season_rank") is not None:
+                new_entry["ht_season_rank"] = bench_player["ht_season_rank"]
 
             assigned_active[best_swap_idx] = new_entry
 
             # Move displaced player back to unassigned pool
             # Reconstruct the original player dict from the displaced entry
             unassigned.remove(bench_player)
-            unassigned.append({
+            displaced_dict = {
                 "name": displaced["name"],
                 "positions": displaced.get("positions", []),
                 "status": displaced["injury_status"],
@@ -327,8 +383,12 @@ def build_lineup(
                 "is_untouchable": displaced["is_untouchable"],
                 "yahoo_30day_rank": displaced["rank_30day"],
                 "yahoo_14day_rank": displaced["rank_14day"],
-                **({"ht_score": displaced["ht_score"]} if "ht_score" in displaced else {}),
-            })
+            }
+            if "ht_score" in displaced:
+                displaced_dict["ht_score"] = displaced["ht_score"]
+            if "ht_season_rank" in displaced:
+                displaced_dict["ht_season_rank"] = displaced["ht_season_rank"]
+            unassigned.append(displaced_dict)
 
     # ------------------------------------------------------------------
     # Phase 2 — fill bench slots with remaining players
@@ -336,7 +396,7 @@ def build_lineup(
 
     remaining_players = sorted(
         unassigned,
-        key=lambda p: _rank_sort_key(p, untouchables),
+        key=lambda p: _rank_sort_key(p, untouchables, tier=TIER_UTIL),
     )
 
     for i, player in enumerate(remaining_players):
@@ -359,6 +419,8 @@ def build_lineup(
             }
         if player.get("ht_score") is not None:
             bench_entry["ht_score"] = player["ht_score"]
+        if player.get("ht_season_rank") is not None:
+            bench_entry["ht_season_rank"] = player["ht_season_rank"]
         assigned_bench.append(bench_entry)
 
     # ------------------------------------------------------------------
@@ -376,12 +438,15 @@ def build_lineup(
         for p in on_il
     ]
 
-    # Format rank-based bench (pre-swap non-starters) for waiver comparison
+    # Format rank-based non-starters for waiver comparison.
+    # Includes flex/util active slots + actual bench players.
+    rank_bench: list[dict] = list(rank_nonstarter_active)  # already formatted entries
+
+    # Add bench players (unassigned pool at snapshot time)
     rank_bench_sorted = sorted(
         rank_bench_players,
-        key=lambda p: _rank_sort_key(p, untouchables),
+        key=lambda p: _rank_sort_key(p, untouchables, tier=TIER_UTIL),
     )
-    rank_bench: list[dict] = []
     for i, player in enumerate(rank_bench_sorted):
         if i >= len(BENCH_SLOTS):
             break
@@ -400,7 +465,16 @@ def build_lineup(
         }
         if player.get("ht_score") is not None:
             bench_entry["ht_score"] = player["ht_score"]
+        if player.get("ht_season_rank") is not None:
+            bench_entry["ht_season_rank"] = player["ht_season_rank"]
         rank_bench.append(bench_entry)
+
+    # ------------------------------------------------------------------
+    # Sort active lineup by display order (PG → SG → G → SF → PF → F → C → C → UTIL)
+    # ------------------------------------------------------------------
+    assigned_active.sort(
+        key=lambda e: DISPLAY_ORDER.get((e["slot"], e["slot_type"]), 99)
+    )
 
     return {
         "active": assigned_active,
@@ -471,43 +545,54 @@ if __name__ == "__main__":
     fake_roster = [
         {"name": "Point Guard A", "positions": ["PG", "G"], "status": "healthy",
          "current_slot": "PG", "yahoo_30day_rank": 5, "yahoo_14day_rank": 4,
-         "has_game_today": True, "ht_score": 8.5},
+         "has_game_today": True, "ht_score": 8.5, "ht_season_rank": 3,
+         "ht_rank_30d": 4, "ht_rank_14d": 6},
         {"name": "Shooting Guard B", "positions": ["SG", "G"], "status": "healthy",
          "current_slot": "SG", "yahoo_30day_rank": 12, "yahoo_14day_rank": 10,
-         "has_game_today": True, "ht_score": 5.2},
+         "has_game_today": True, "ht_score": 5.2, "ht_season_rank": 15,
+         "ht_rank_30d": 10, "ht_rank_14d": 12},
         {"name": "Small Forward C", "positions": ["SF", "F"], "status": "healthy",
          "current_slot": "SF", "yahoo_30day_rank": 20, "yahoo_14day_rank": 18,
-         "has_game_today": False},
+         "has_game_today": False, "ht_season_rank": 25,
+         "ht_rank_30d": 22, "ht_rank_14d": 19},
         {"name": "Power Forward D", "positions": ["PF", "F"], "status": "Q",
          "current_slot": "PF", "yahoo_30day_rank": 30, "yahoo_14day_rank": 28,
-         "has_game_today": True},
+         "has_game_today": True, "ht_season_rank": 35,
+         "ht_rank_30d": 32, "ht_rank_14d": 30},
         {"name": "Center E", "positions": ["C"], "status": "healthy",
          "current_slot": "C", "yahoo_30day_rank": 8, "yahoo_14day_rank": 7,
-         "has_game_today": True},
+         "has_game_today": True, "ht_score": 6.0, "ht_season_rank": 10,
+         "ht_rank_30d": 9, "ht_rank_14d": 8},
         {"name": "Swing F", "positions": ["SG", "SF", "G", "F"], "status": "healthy",
          "current_slot": "UTIL", "yahoo_30day_rank": 15, "yahoo_14day_rank": 14,
-         "has_game_today": True},
+         "has_game_today": True, "ht_season_rank": 20,
+         "ht_rank_30d": 16, "ht_rank_14d": 13},
         {"name": "Big G", "positions": ["PF", "C"], "status": "healthy",
          "current_slot": "UTIL", "yahoo_30day_rank": 25, "yahoo_14day_rank": 22,
-         "has_game_today": False},
+         "has_game_today": False, "ht_season_rank": 30,
+         "ht_rank_30d": 28, "ht_rank_14d": 24},
         {"name": "Guard H", "positions": ["PG"], "status": "healthy",
          "current_slot": "BN", "yahoo_30day_rank": 45, "yahoo_14day_rank": 50,
-         "has_game_today": True},
+         "has_game_today": True, "ht_season_rank": 50,
+         "ht_rank_30d": 48, "ht_rank_14d": 55},
         {"name": "Forward I", "positions": ["SF"], "status": "INJ",
          "current_slot": "BN", "yahoo_30day_rank": 60, "yahoo_14day_rank": 55,
-         "has_game_today": False},
+         "has_game_today": False, "ht_season_rank": 65},
         {"name": "Center IL", "positions": ["C"], "status": "INJ",
          "current_slot": "IL", "yahoo_30day_rank": 40, "yahoo_14day_rank": 38,
          "has_game_today": False},
         {"name": "Guard J", "positions": ["SG", "G"], "status": "healthy",
          "current_slot": "G", "yahoo_30day_rank": 70, "yahoo_14day_rank": 65,
-         "has_game_today": True},
+         "has_game_today": True, "ht_season_rank": 75,
+         "ht_rank_30d": 72, "ht_rank_14d": 68},
         {"name": "Forward K", "positions": ["PF", "F"], "status": "healthy",
          "current_slot": "F", "yahoo_30day_rank": 80, "yahoo_14day_rank": 75,
-         "has_game_today": True},
+         "has_game_today": True, "ht_season_rank": 85,
+         "ht_rank_30d": 82, "ht_rank_14d": 78},
         {"name": "Center L", "positions": ["C"], "status": "healthy",
          "current_slot": "BN", "yahoo_30day_rank": 90, "yahoo_14day_rank": 85,
-         "has_game_today": False},
+         "has_game_today": False, "ht_season_rank": 95,
+         "ht_rank_30d": 92, "ht_rank_14d": 88},
     ]
 
     games = {"LAL", "GSW", "BOS", "MIL", "DEN", "PHX"}
@@ -515,7 +600,7 @@ if __name__ == "__main__":
 
     result = build_lineup(fake_roster, untouchables, games)
 
-    print("\n=== ACTIVE LINEUP ===")
+    print("\n=== ACTIVE LINEUP (display order) ===")
     for p in result["active"]:
         flags = []
         if p["flag_low_rank"]:
@@ -525,10 +610,10 @@ if __name__ == "__main__":
         if p["is_untouchable"]:
             flags.append("UNTOUCHABLE")
         bm = f"ht={p.get('ht_score', '—')}" if 'ht_score' in p else ""
-        phase = p.get("slot_type", "?")
-        rank_display = f"rank30={p['rank_30day']:<4}" if phase == "stable" else f"rank14={p['rank_14day']:<4}"
+        tier = _tier_for_entry(p)
+        rank_display = f"szn={p.get('ht_season_rank', '?'):<4}"
         print(
-            f"  {p['slot']:<6} [{phase:<6}] {p['name']:<25} {rank_display} "
+            f"  {p['slot']:<6} [{tier:<6}] {p['name']:<25} {rank_display} "
             f"game={'Y' if p['has_game_today'] else 'N'} {bm} {' '.join(flags)}"
         )
 
@@ -540,14 +625,15 @@ if __name__ == "__main__":
     for p in result["on_il"]:
         print(f"  {p['slot']:<6} {p['name']:<25} status={p['injury_status']}")
 
-    print("\n=== RANK-BASED ACTIVE (pre-swap, for waiver comparison) ===")
+    print("\n=== RANK-BASED STARTERS (5 stable, for active-upgrade comparison) ===")
     for p in result["rank_active"]:
         phase = p.get("slot_type", "?")
         print(f"  {p['slot']:<6} [{phase:<6}] {p['name']:<25} game={'Y' if p['has_game_today'] else 'N'}")
 
-    print("\n=== RANK-BASED BENCH (pre-swap, for waiver comparison) ===")
+    print("\n=== RANK-BASED NON-STARTERS (flex/util/bench, for bench-upgrade comparison) ===")
     for p in result["rank_bench"]:
-        print(f"  BN     {p['name']:<25} rank30={p['rank_30day']}")
+        slot = p.get("slot", "BN")
+        print(f"  {slot:<6} {p['name']:<25} rank30={p['rank_30day']}")
 
     actual_shape, met, desc = check_bench_shape(result["bench"])
     print(f"\nBench shape: {desc}  target_met={met}")

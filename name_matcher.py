@@ -62,11 +62,37 @@ def _last_name_first_initial(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Team normalization
+# ---------------------------------------------------------------------------
+
+# Common abbreviation variants → canonical form
+TEAM_ALIASES: dict[str, str] = {
+    "SA": "SAS", "GS": "GSW", "NY": "NYK", "NO": "NOP",
+    "PHO": "PHX", "BKN": "BKN", "BRK": "BKN",
+}
+
+
+def _normalize_team(abbr: str) -> str:
+    """Normalize a team abbreviation to a canonical form."""
+    upper = abbr.strip().upper()
+    return TEAM_ALIASES.get(upper, upper)
+
+
+def _teams_match(team_a: str, team_b: str) -> bool:
+    """Return True if two team abbreviations refer to the same team."""
+    if not team_a or not team_b:
+        return False
+    return _normalize_team(team_a) == _normalize_team(team_b)
+
+
+# ---------------------------------------------------------------------------
 # Matching engine
 # ---------------------------------------------------------------------------
 
-# Minimum fuzzy ratio to accept a match
+# Minimum fuzzy ratio to accept a match (unconditional)
 FUZZY_THRESHOLD = 90
+# Lower threshold when team abbreviation also matches
+FUZZY_THRESHOLD_WITH_TEAM = 85
 
 
 def match_bm_to_yahoo(
@@ -117,9 +143,12 @@ def match_bm_to_yahoo(
             matched[yp["name"]] = bm
             continue
 
-        # Strategy 2: Fuzzy match
+        # Strategy 2: Fuzzy match (dual threshold — unconditional ≥90, team-confirmed ≥85)
+        bm_team = bm.get("team", "")
         best_ratio = 0
         best_yp = None
+        best_ratio_team = 0
+        best_yp_team = None
         for yp in yahoo_all:
             if yp["name"] in matched:
                 continue
@@ -127,18 +156,33 @@ def match_bm_to_yahoo(
             if ratio > best_ratio:
                 best_ratio = ratio
                 best_yp = yp
+            if ratio > best_ratio_team and _teams_match(bm_team, yp.get("team_abbr", "")):
+                best_ratio_team = ratio
+                best_yp_team = yp
 
         if best_ratio >= FUZZY_THRESHOLD and best_yp is not None:
             matched[best_yp["name"]] = bm
             continue
+        if best_ratio_team >= FUZZY_THRESHOLD_WITH_TEAM and best_yp_team is not None:
+            matched[best_yp_team["name"]] = bm
+            continue
 
-        # Strategy 3: Last-name + first-initial
+        # Strategy 3: Last-name + first-initial (prefer team-matched candidate)
         bm_lnfi = _last_name_first_initial(bm_name)
         candidates = yahoo_by_lnfi.get(bm_lnfi, [])
+        team_candidate = None
+        any_candidate = None
         for yp in candidates:
-            if yp["name"] not in matched:
-                matched[yp["name"]] = bm
+            if yp["name"] in matched:
+                continue
+            if any_candidate is None:
+                any_candidate = yp
+            if _teams_match(bm_team, yp.get("team_abbr", "")):
+                team_candidate = yp
                 break
+        chosen_yp = team_candidate or any_candidate
+        if chosen_yp is not None:
+            matched[chosen_yp["name"]] = bm
         else:
             unmatched.append(bm_name)
 
@@ -167,12 +211,12 @@ if __name__ == "__main__":
         {"name": "Jaren Jackson Jr.", "team": "MEM", "value": 5.5, "cat_values": {}},
     ]
     test_yahoo = [
-        {"name": "Nikola Jokic"},
-        {"name": "Shai Gilgeous-Alexander"},
-        {"name": "CJ McCollum"},
-        {"name": "Nic Claxton"},
-        {"name": "Luka Doncic"},
-        {"name": "Jaren Jackson"},
+        {"name": "Nikola Jokic", "team_abbr": "DEN"},
+        {"name": "Shai Gilgeous-Alexander", "team_abbr": "OKC"},
+        {"name": "CJ McCollum", "team_abbr": "NOP"},
+        {"name": "Nic Claxton", "team_abbr": "BKN"},
+        {"name": "Luka Doncic", "team_abbr": "DAL"},
+        {"name": "Jaren Jackson", "team_abbr": "MEM"},
     ]
 
     result = match_bm_to_yahoo(test_bm, test_yahoo)
