@@ -46,7 +46,7 @@ main.py (9 steps)
  ├─ name_matcher.py    → Fuzzy-match HT names to Yahoo names, attach ht_score to player dicts
  ├─ optimizer.py       → Two-phase lineup builder (stable 30-day + flex 14-day)
  ├─ il_manager.py      → Flag IL moves (read-only, never mutates roster)
- ├─ waiver_scanner.py  → Compare FAs vs active/bench for upgrade opportunities
+ ├─ waiver_scanner.py  → Compare FAs vs rank-based starters/non-starters for upgrades
  └─ emailer.py         → Build styled HTML email, send via Gmail SMTP
 ```
 
@@ -59,6 +59,7 @@ main.py (9 steps)
   - **Stable slots** (C, PG, SG, SF, PF): filled using **30-day avg rank** — consistent, reliable floor players. Flagged if rank > 60 (5 stable × 12 teams).
   - **Flex slots** (C, G, F, UTIL, UTIL): filled using **14-day avg rank** — ride the hot hand. No low-rank flag (streaky players expected).
   - **Game-day swaps**: after filling by rank, bench players with games swap into active slots of players without games, following swap priority: **UTIL first → G/F/C2 → PG/SG/SF/PF/C1 last**. Core starters stay in place unless no other option exists.
+  - **Rank-based lineup snapshot**: before game-day swaps, the optimizer snapshots `rank_active` (10 starters by rank) and `rank_bench` (3 non-starters by rank). Waiver scanner compares FAs against these rank-based lists, not the post-swap lineup.
   - HT z-score is primary signal for both phases; the 30-day vs 14-day split applies to the rank fallback (HT rank → Yahoo rank).
   - Untouchables get a +10,000 HT bonus (or -10,000 rank bonus in rank fallback) to ensure they stay active.
 - **yahoo_client.py** is the largest/most complex module (~640 lines). It paginates Yahoo's `sort=AR` endpoint for global player rankings, fetches GP/MPG stats separately.

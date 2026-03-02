@@ -172,7 +172,7 @@ def _build_bench_section(bench: list[dict], bench_shape_desc: Optional[str] = No
             f'Bench shape: {bench_shape_desc}</td></tr>'
         )
 
-    rows += _col_header("Slot", "Player", "30-Day Rank", "14-Day Rank", "Game Today", "Status")
+    rows += _col_header("Slot", "Player", "HT", "30-Day Rank", "14-Day Rank", "Game Today", "Status")
 
     for i, p in enumerate(bench):
         bg = COLOUR["bg_row_even"] if i % 2 == 0 else COLOUR["bg_row_odd"]
@@ -182,9 +182,13 @@ def _build_bench_section(bench: list[dict], bench_shape_desc: Optional[str] = No
         game_today = "Yes" if p.get("has_game_today") else "No"
         game_color = COLOUR["accent_green"] if p.get("has_game_today") else COLOUR["accent_red"]
 
+        ht_str = f"{p['ht_score']:.1f}" if p.get("ht_score") is not None else "—"
+        ht_color = COLOUR["accent_blue"] if p.get("ht_score") is not None else COLOUR["text_muted"]
+
         cells = [
             _td("BN"),
             _td(p["name"], bold=True),
+            _td(ht_str, color=ht_color, bold=p.get("ht_score") is not None),
             _td(str(p.get("rank_30day", "—"))),
             _td(str(p.get("rank_14day", "—"))),
             _td(game_today, color=game_color),
@@ -246,12 +250,12 @@ def _build_il_section(il_flags: dict) -> str:
 
 
 def _build_waiver_active_section(upgrades: list[dict]) -> str:
-    rows = _section_header("🔄 WAIVER WIRE — ACTIVE ROSTER UPGRADES")
+    rows = _section_header("🔄 WAIVER WIRE — STARTER UPGRADES")
 
     if not upgrades:
         rows += (
             f'<tr><td colspan="99" style="padding:10px 16px;color:{COLOUR["text_muted"]};">'
-            f'No active upgrade opportunities found.</td></tr>'
+            f'No starter upgrade opportunities found.</td></tr>'
         )
         return rows
 
@@ -284,12 +288,12 @@ def _build_waiver_active_section(upgrades: list[dict]) -> str:
 
 
 def _build_waiver_bench_section(upgrades: list[dict]) -> str:
-    rows = _section_header("🔄 WAIVER WIRE — BENCH UPGRADES")
+    rows = _section_header("🔄 WAIVER WIRE — NON-STARTER UPGRADES")
 
     if not upgrades:
         rows += (
             f'<tr><td colspan="99" style="padding:10px 16px;color:{COLOUR["text_muted"]};">'
-            f'No bench upgrade opportunities found.</td></tr>'
+            f'No non-starter upgrade opportunities found.</td></tr>'
         )
         return rows
 
@@ -526,7 +530,7 @@ if __name__ == "__main__":
         "bench": [
             {"name": "De'Aaron Fox", "slot": "BN", "rank_30day": 40,
              "rank_14day": 38, "has_game_today": True, "injury_status": "Q",
-             "is_untouchable": False, "flag_low_rank": False},
+             "is_untouchable": False, "flag_low_rank": False, "ht_score": 6.3},
         ],
         "bench_shape_desc": "G: 1/1 (OK) | F: 0/1 (NEED) | C: 0/1 (NEED)",
         "on_il": [

@@ -248,8 +248,10 @@ def main() -> None:
     log("Step 7/9  Scanning waiver wire …")
     from waiver_scanner import scan_active_upgrades, scan_bench_upgrades
 
-    waiver_active = scan_active_upgrades(free_agents, active_lineup, untouchables)
-    waiver_bench = scan_bench_upgrades(free_agents, bench, untouchables)
+    rank_active = lineup["rank_active"]
+    rank_bench = lineup["rank_bench"]
+    waiver_active = scan_active_upgrades(free_agents, rank_active, untouchables)
+    waiver_bench = scan_bench_upgrades(free_agents, rank_bench, untouchables)
     log(f"          Active upgrades: {len(waiver_active)}, Bench upgrades: {len(waiver_bench)}")
 
     # ------------------------------------------------------------------

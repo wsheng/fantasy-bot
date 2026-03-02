@@ -244,6 +244,12 @@ def build_lineup(
     _fill_slots(STABLE_FILL_ORDER, use_14day=False, is_stable=True)
     _fill_slots(FLEX_FILL_ORDER,   use_14day=True,  is_stable=False)
 
+    # Snapshot the rank-based lineup before game-day swaps.
+    # These are the "true" starters/non-starters for waiver comparison.
+    import copy
+    rank_active = copy.deepcopy(assigned_active)
+    rank_bench_players = list(unassigned)  # will be formatted after swaps
+
     # ------------------------------------------------------------------
     # Game-day swap optimization
     # ------------------------------------------------------------------
@@ -370,10 +376,38 @@ def build_lineup(
         for p in on_il
     ]
 
+    # Format rank-based bench (pre-swap non-starters) for waiver comparison
+    rank_bench_sorted = sorted(
+        rank_bench_players,
+        key=lambda p: _rank_sort_key(p, untouchables),
+    )
+    rank_bench: list[dict] = []
+    for i, player in enumerate(rank_bench_sorted):
+        if i >= len(BENCH_SLOTS):
+            break
+        rank_30 = player.get("yahoo_30day_rank", 999)
+        rank_14 = player.get("yahoo_14day_rank", 999)
+        bench_entry = {
+            "name": player["name"],
+            "slot": "BN",
+            "rank_30day": rank_30,
+            "rank_14day": rank_14,
+            "has_game_today": player.get("has_game_today", False),
+            "injury_status": player.get("status", "healthy"),
+            "is_untouchable": player["name"] in untouchables,
+            "flag_low_rank": False,
+            "positions": player.get("positions", []),
+        }
+        if player.get("ht_score") is not None:
+            bench_entry["ht_score"] = player["ht_score"]
+        rank_bench.append(bench_entry)
+
     return {
         "active": assigned_active,
         "bench": assigned_bench,
         "on_il": il_formatted,
+        "rank_active": rank_active,
+        "rank_bench": rank_bench,
     }
 
 
@@ -505,6 +539,15 @@ if __name__ == "__main__":
     print("\n=== IL ===")
     for p in result["on_il"]:
         print(f"  {p['slot']:<6} {p['name']:<25} status={p['injury_status']}")
+
+    print("\n=== RANK-BASED ACTIVE (pre-swap, for waiver comparison) ===")
+    for p in result["rank_active"]:
+        phase = p.get("slot_type", "?")
+        print(f"  {p['slot']:<6} [{phase:<6}] {p['name']:<25} game={'Y' if p['has_game_today'] else 'N'}")
+
+    print("\n=== RANK-BASED BENCH (pre-swap, for waiver comparison) ===")
+    for p in result["rank_bench"]:
+        print(f"  BN     {p['name']:<25} rank30={p['rank_30day']}")
 
     actual_shape, met, desc = check_bench_shape(result["bench"])
     print(f"\nBench shape: {desc}  target_met={met}")
