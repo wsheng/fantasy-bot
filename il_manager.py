@@ -14,7 +14,7 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 
 # Statuses that indicate a player should be placed on IL
-SHOULD_BE_ON_IL: set[str] = {"INJ", "O"}
+SHOULD_BE_ON_IL: set[str] = {"INJ"}
 
 # Statuses that indicate a player on IL could return
 HEALTHY_STATUSES: set[str] = {"healthy", ""}
@@ -112,6 +112,90 @@ def recommend_drop_for_activation(
 
 
 # ---------------------------------------------------------------------------
+# Pickup recommendation logic (player going ON IL → open roster spot)
+# ---------------------------------------------------------------------------
+
+# Statuses that disqualify a free agent from being recommended as a pickup
+_FA_DISQUALIFYING_STATUSES: set[str] = {"INJ", "O", "NA", "SUSP", "IL", "IL+"}
+
+
+def recommend_pickup_for_il_move(
+    il_player: dict,
+    free_agents: list[dict],
+    untouchables: dict[str, float],
+) -> list[dict]:
+    """
+    Recommend up to 3 free agents to pick up when a player is moved to IL.
+
+    Moving a player to IL frees a roster spot, so we suggest the best
+    available FA to claim that spot.
+
+    Scoring (best player = best pickup):
+    1. Filter out FAs with disqualifying statuses (INJ, O, NA, SUSP, IL)
+    2. Primary: highest ht_score (None treated as -999)
+    3. Tiebreaker: lowest yahoo_14day_rank (missing treated as 999)
+    4. Positional bonus: +0.5 to ht_score for sorting if FA shares any
+       eligible_positions with the IL player
+
+    Returns a list of up to 3 dicts with pickup candidate info, or empty
+    list if no eligible FAs available.
+    """
+    if not free_agents:
+        return []
+
+    il_positions = set(il_player.get("eligible_positions", []))
+
+    candidates = []
+    for fa in free_agents:
+        # Skip FAs with disqualifying statuses
+        status = fa.get("status", "healthy")
+        if status in _FA_DISQUALIFYING_STATUSES:
+            continue
+
+        ht = fa.get("ht_score")
+        ht_sort = ht if ht is not None else -999.0
+
+        rank_14 = fa.get("yahoo_14day_rank") or fa.get("ht_rank_14d") or 999
+
+        # Positional overlap: small bonus toward picking up
+        fa_positions = set(fa.get("eligible_positions", []))
+        pos_overlap = bool(il_positions & fa_positions)
+
+        # Sort key: higher ht_sort → better pickup, lower rank_14 → better
+        sort_key = (-(ht_sort + (0.5 if pos_overlap else 0.0)), rank_14)
+
+        candidates.append((sort_key, fa, ht, rank_14, pos_overlap))
+
+    if not candidates:
+        return []
+
+    # Sort ascending: best pickup first (most negative sort key)
+    candidates.sort(key=lambda x: x[0])
+
+    results = []
+    for _, best_fa, ht, rank_14, pos_overlap in candidates[:3]:
+        reason_parts = []
+        if ht is not None:
+            reason_parts.append(f"HT: {ht:.1f}")
+        else:
+            reason_parts.append("no HT score")
+        if rank_14 and rank_14 != 999:
+            reason_parts.append(f"rank14: {rank_14}")
+        if pos_overlap:
+            reason_parts.append("position match")
+
+        results.append({
+            "name": best_fa.get("name", "Unknown"),
+            "positions": best_fa.get("eligible_positions", []),
+            "ht_score": ht,
+            "yahoo_14day_rank": rank_14,
+            "reason": ", ".join(reason_parts),
+        })
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -119,6 +203,7 @@ def recommend_drop_for_activation(
 def check_il_flags(
     roster: list[dict],
     bench: list[dict] | None = None,
+    free_agents: list[dict] | None = None,
     untouchables: dict[str, float] | None = None,
 ) -> dict:
     """
@@ -130,6 +215,8 @@ def check_il_flags(
              Each dict must have: name, status, current_slot
     bench : optional list of bench player dicts (from optimizer output).
             When provided, activation entries will include a drop recommendation.
+    free_agents : optional list of free agent dicts.
+            When provided, move-to-IL entries will include pickup recommendations.
     untouchables : optional dict of {player_name: mvp_percent}.
             Untouchable players will never be recommended as drops.
 
@@ -148,7 +235,7 @@ def check_il_flags(
 
     Notes
     -----
-    - should_move_to_il: players with status INJ or O who are currently
+    - should_move_to_il: players with status INJ who are currently
       in an active or bench slot (i.e. wasting a roster spot).
     - should_activate_from_il: players in an IL/IL+ slot whose injury
       status is now healthy (no designation) — they are eligible to return
@@ -170,14 +257,27 @@ def check_il_flags(
         # Case 1: Player is NOT on IL but has a hard injury designation
         # ---------------------------------------------------------------
         if status in SHOULD_BE_ON_IL and slot not in IL_SLOTS:
-            should_move_to_il.append(
-                {
-                    "name": name,
-                    "status": status,
-                    "current_slot": slot,
-                    "action": f"Move {name} ({slot}) -> IL  [status: {status}]",
-                }
-            )
+            entry = {
+                "name": name,
+                "status": status,
+                "current_slot": slot,
+                "action": f"Move {name} ({slot}) -> IL  [status: {status}]",
+                "pickup_candidates": [],
+            }
+
+            # Attach pickup recommendations if free agent data is available
+            if free_agents is not None:
+                pickups = recommend_pickup_for_il_move(
+                    player, free_agents, untouchables or {}
+                )
+                entry["pickup_candidates"] = pickups
+                if pickups:
+                    entry["action"] += (
+                        f" — consider picking up {pickups[0]['name']}"
+                        f" ({pickups[0]['reason']})"
+                    )
+
+            should_move_to_il.append(entry)
 
         # ---------------------------------------------------------------
         # Case 2: Player IS on IL but no longer has an injury designation
@@ -272,9 +372,13 @@ def summarise_il_flags(il_flags: dict) -> list[str]:
 if __name__ == "__main__":
     fake_roster = [
         # Should move to IL (INJ, sitting on bench)
-        {"name": "Injured Bench Star", "status": "INJ", "current_slot": "BN"},
-        # Should move to IL (O, sitting in active spot)
-        {"name": "Out Active Player", "status": "O", "current_slot": "PF"},
+        {"name": "Injured Bench Star", "status": "INJ", "current_slot": "BN",
+         "eligible_positions": ["PG", "SG"]},
+        # Should move to IL (INJ, sitting in active spot)
+        {"name": "Injured Active Player", "status": "INJ", "current_slot": "PF",
+         "eligible_positions": ["SF", "PF"]},
+        # Fine — Out status is not IL-eligible
+        {"name": "Out For Tonight", "status": "O", "current_slot": "SG"},
         # Should activate (IL slot, but now healthy)
         {"name": "Recovered IL Player", "status": "healthy", "current_slot": "IL",
          "eligible_positions": ["SF", "PF"], "ht_score": 5.0},
@@ -298,6 +402,17 @@ if __name__ == "__main__":
 
     fake_untouchables = {"Star Untouchable": 95.0}
 
+    fake_free_agents = [
+        {"name": "FA Guard", "eligible_positions": ["PG", "SG"], "positions": ["PG", "SG"],
+         "status": "healthy", "ht_score": 3.5, "yahoo_14day_rank": 45},
+        {"name": "FA Forward", "eligible_positions": ["SF", "PF"], "positions": ["SF", "PF"],
+         "status": "healthy", "ht_score": 2.8, "yahoo_14day_rank": 55},
+        {"name": "FA Center", "eligible_positions": ["C"], "positions": ["C"],
+         "status": "healthy", "ht_score": 1.5, "yahoo_14day_rank": 80},
+        {"name": "Injured FA", "eligible_positions": ["PG"], "positions": ["PG"],
+         "status": "INJ", "ht_score": 5.0, "yahoo_14day_rank": 20},
+    ]
+
     # Test without bench (backward compat)
     print("=== Without bench (backward compat) ===")
     flags = check_il_flags(fake_roster)
@@ -305,13 +420,21 @@ if __name__ == "__main__":
         print(f"  {p['action']}")
         print(f"  drop_candidate: {p.get('drop_candidate')}")
 
-    # Test with bench + untouchables
-    print("\n=== With bench + untouchables ===")
-    flags = check_il_flags(fake_roster, bench=fake_bench, untouchables=fake_untouchables)
+    # Test with bench + untouchables + free agents
+    print("\n=== With bench + untouchables + free agents ===")
+    flags = check_il_flags(fake_roster, bench=fake_bench, free_agents=fake_free_agents,
+                           untouchables=fake_untouchables)
 
     print("\n--- Should move to IL ---")
     for p in flags["should_move_to_il"]:
         print(f"  {p['action']}")
+        pickups = p.get("pickup_candidates", [])
+        if pickups:
+            for pc in pickups:
+                print(f"    -> Pickup: {pc['name']} | positions: {pc['positions']} | "
+                      f"HT: {pc['ht_score']} | rank14: {pc['yahoo_14day_rank']} | reason: {pc['reason']}")
+        else:
+            print(f"    -> No pickup candidates")
 
     print("\n--- Should activate from IL ---")
     for p in flags["should_activate_from_il"]:

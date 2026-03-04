@@ -266,7 +266,7 @@ def main() -> None:
     log("Step 6/8  Checking IL flags …")
     from il_manager import check_il_flags
 
-    il_flags = check_il_flags(roster, bench=bench, untouchables=untouchables)
+    il_flags = check_il_flags(roster, bench=bench, free_agents=free_agents, untouchables=untouchables)
 
     # ------------------------------------------------------------------
     # Step 7: Run waiver scanner

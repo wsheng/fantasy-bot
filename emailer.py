@@ -221,16 +221,29 @@ def _build_il_section(il_flags: dict) -> str:
         return rows
 
     rows = _section_header("🏥 IL FLAGS — ACTION REQUIRED")
-    rows += _col_header("Action", "Player", "Current Slot", "Status", "Suggested Drop")
+    rows += _col_header("Action", "Player", "Current Slot", "Status", "Suggestion")
 
     for i, p in enumerate(move_to):
         bg = COLOUR["bg_danger"]
+        pickups = p.get("pickup_candidates", [])
+        if pickups:
+            pickup_parts = []
+            for pc in pickups:
+                ht_str = f"{pc['ht_score']:.1f}" if pc.get("ht_score") is not None else "n/a"
+                rank_str = str(pc.get("yahoo_14day_rank", "—"))
+                pickup_parts.append(
+                    f"<strong>{pc['name']}</strong> "
+                    f"(HT: {ht_str}, rank14: {rank_str})"
+                )
+            pickup_text = "Pick up: " + "<br>".join(pickup_parts)
+        else:
+            pickup_text = '<span style="color:#999;">—</span>'
         cells = [
             _td(_pill("Move → IL", COLOUR["accent_red"])),
             _td(p["name"], bold=True),
             _td(p["current_slot"]),
             _td(_status_badge(p["status"])),
-            _td(""),
+            _td(pickup_text),
         ]
         rows += _row(cells, bg)
 
@@ -553,8 +566,13 @@ if __name__ == "__main__":
         ],
         "il_flags": {
             "should_move_to_il": [
-                {"name": "Jimmy Butler", "status": "O", "current_slot": "SF",
-                 "action": "Move Jimmy Butler (SF) -> IL  [status: O]"},
+                {"name": "Jimmy Butler", "status": "INJ", "current_slot": "SF",
+                 "action": "Move Jimmy Butler (SF) -> IL  [status: INJ]",
+                 "pickup_candidates": [
+                     {"name": "Franz Wagner", "positions": ["SF", "F"],
+                      "ht_score": 5.8, "yahoo_14day_rank": 25,
+                      "reason": "HT: 5.8, rank14: 25, position match"},
+                 ]},
             ],
             "should_activate_from_il": [
                 {"name": "Joel Embiid", "current_slot": "IL",
