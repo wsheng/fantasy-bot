@@ -43,6 +43,7 @@ DO_NOT_DROP_COUNT = 6
 _DND_ALPHA_SEASON = 0.3
 _DND_ALPHA_WINDOW = 0.7
 _DND_DEFAULT_RANK = 999
+_DND_MIN_HT_ZSCORE = 0.5  # must have season z-score >= 0.5 to be untouchable
 
 
 def _compute_do_not_drop(roster: list[dict]) -> tuple[dict[str, float], list[dict]]:
@@ -51,6 +52,7 @@ def _compute_do_not_drop(roster: list[dict]) -> tuple[dict[str, float], list[dic
 
     Uses a recency-weighted composite: 30% season rank + 70% 14-day rank.
     Fallback chain for missing ranks: 14d → 30d → season → 999.
+    Players with HT z-score below 0.5 are excluded (hot-hand only, not stable enough).
 
     Returns
     -------
@@ -61,6 +63,11 @@ def _compute_do_not_drop(roster: list[dict]) -> tuple[dict[str, float], list[dic
     for p in roster:
         slot = p.get("current_slot", "BN")
         if slot in ("IL", "IL+"):
+            continue
+
+        # Exclude players with low/negative season z-score (hot-hand only)
+        ht_score = p.get("ht_score")
+        if ht_score is None or ht_score < _DND_MIN_HT_ZSCORE:
             continue
 
         szn = p.get("ht_season_rank", _DND_DEFAULT_RANK)
@@ -279,9 +286,6 @@ def main() -> None:
     waiver_active = scan_active_upgrades(free_agents, rank_active, untouchables)
     waiver_bench = scan_bench_upgrades(free_agents, rank_bench, untouchables)
 
-    # Filter out recommendations to drop do-not-drop players
-    waiver_active = [w for w in waiver_active if not w.get("is_untouchable_replace")]
-    waiver_bench = [w for w in waiver_bench if not w.get("is_untouchable_replace")]
     log(f"          Active upgrades: {len(waiver_active)}, Bench upgrades: {len(waiver_bench)}")
 
     # ------------------------------------------------------------------

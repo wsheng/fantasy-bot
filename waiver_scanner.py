@@ -18,8 +18,9 @@ FA_MAX_RANK_30 = 96      # must be inside top 96 by 30-day rank
 FA_MIN_MPG = 28.0        # must average 28+ minutes per game
 FA_MIN_GAMES_30 = 5      # must have played 5+ games in last 30 days
 
-# Bench upgrade uses 14-day rank instead of 30-day
-FA_MAX_RANK_14 = 96
+# Bench upgrade uses 14-day rank instead of 30-day (wider net for hot hands)
+FA_MAX_RANK_14 = 120
+FA_MIN_MPG_BENCH = 26.0  # lower MPG bar for bench (role players welcome)
 
 # Injury statuses that disqualify a FA from consideration
 # "O" = Out, "INJ" = Injured (hard out), "NA" = not available, "SUSP" = suspended
@@ -67,11 +68,12 @@ def _fa_qualifies_bench(fa: dict) -> bool:
         return False
     if fa.get("yahoo_14day_rank", 999) > FA_MAX_RANK_14:
         return False
-    mpg = fa.get("mpg", 0.0)
-    if mpg > 0 and mpg < FA_MIN_MPG:
+    # Use 14-day MPG for bench (hot-hand evaluation), fall back to 30-day
+    mpg = fa.get("mpg_14d") or fa.get("mpg", 0.0)
+    if mpg > 0 and mpg < FA_MIN_MPG_BENCH:
         return False
-    games = fa.get("games_last_30", 0)
-    if games > 0 and games < FA_MIN_GAMES_30:
+    games = fa.get("games_last_14") or fa.get("games_last_30", 0)
+    if games > 0 and games < 2:  # looser bar: played at least 2 in last 14d
         return False
     return True
 
@@ -173,9 +175,13 @@ def scan_active_upgrades(
                 opp["fa_ht_score"] = fa_ht
             opportunities.append(opp)
 
+    # Filter out untouchable replacements before dedup so valid non-DND
+    # matches aren't shadowed by a bigger-improvement DND match
+    droppable = [o for o in opportunities if not o.get("is_untouchable_replace")]
+
     # Deduplicate: keep best opportunity per FA (highest improvement)
     seen_fa: dict[str, dict] = {}
-    for opp in opportunities:
+    for opp in droppable:
         name = opp["fa_name"]
         if name not in seen_fa or opp["rank_improvement"] > seen_fa[name]["rank_improvement"]:
             seen_fa[name] = opp
@@ -239,17 +245,9 @@ def scan_bench_upgrades(
                 if fa_bench_cat != bench_cat:
                     continue
 
-            # Use weekly value if both sides have HT data, else fall back to rank
-            bench_ht = bench_player.get("ht_score")
-            bench_games = bench_player.get("games_remaining", 0)
-            if fa_weekly is not None and bench_ht is not None:
-                bench_weekly = bench_ht * bench_games if bench_games else 0
-                improvement = fa_weekly - bench_weekly
-            elif fa_ht is not None and fa_ht <= 0:
-                # FA has a negative HT score — don't recommend over unscored player
-                continue
-            else:
-                improvement = bench_rank_14 - fa_rank_14
+            # Bench = hot-hand slots: always compare by 14-day rank
+            # (z-score is a season-long stability metric, not relevant here)
+            improvement = bench_rank_14 - fa_rank_14
 
             if improvement <= 0:
                 continue
@@ -274,9 +272,13 @@ def scan_bench_upgrades(
                 opp["fa_weekly_value"] = round(fa_weekly, 2)
             opportunities.append(opp)
 
+    # Filter out untouchable replacements before dedup so valid non-DND
+    # matches aren't shadowed by a bigger-improvement DND match
+    droppable = [o for o in opportunities if not o.get("is_untouchable_replace")]
+
     # Deduplicate per FA, keep best
     seen_fa: dict[str, dict] = {}
-    for opp in opportunities:
+    for opp in droppable:
         name = opp["fa_name"]
         if name not in seen_fa or opp["rank_improvement"] > seen_fa[name]["rank_improvement"]:
             seen_fa[name] = opp

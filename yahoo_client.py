@@ -175,8 +175,9 @@ class YahooFantasyClient:
             player_info_fallback = self._fetch_players_by_keys_info(missing_keys)
 
         # 2. GP and MPG from raw Yahoo stats API (stat_id 0=GP, 2=total MIN)
-        print("[yahoo_client]   Fetching GP/MPG stats …")
+        print("[yahoo_client]   Fetching GP/MPG stats (30d + 14d) …")
         gp_mpg = self._fetch_gp_mpg(player_keys, "lastmonth")
+        gp_mpg_14 = self._fetch_gp_mpg(player_keys, "biweekly")
 
         # 3. percent_owned for informational display
         pct_map: dict[int, float] = {}
@@ -209,6 +210,7 @@ class YahooFantasyClient:
             r30      = self._cached_ranks_30.get(pkey, {})
             r14      = self._cached_ranks_14.get(pkey, {})
             gm       = gp_mpg.get(pkey, {})
+            gm14     = gp_mpg_14.get(pkey, {})
             fallback = player_info_fallback.get(pkey, {})
 
             # team_abbr: prefer ranked result, fall back to direct fetch
@@ -225,7 +227,9 @@ class YahooFantasyClient:
                 "yahoo_30day_rank": r30.get("rank", 999),
                 "yahoo_14day_rank": r14.get("rank", 999),
                 "mpg":             gm.get("mpg", 0.0),
+                "mpg_14d":         gm14.get("mpg", 0.0),
                 "games_last_30":   gm.get("gp", 0),
+                "games_last_14":   gm14.get("gp", 0),
                 "percent_owned":   pct_map.get(pid, 0.0),
             })
 
@@ -264,10 +268,11 @@ class YahooFantasyClient:
             key=lambda kv: kv[1]["rank"],
         )
 
-        # GP/MPG for FAs
+        # GP/MPG for FAs (both 30d and 14d)
         fa_candidate_keys = [k for k, _ in ordered if k in fa_keys][:limit]
-        print("[yahoo_client]   Fetching FA GP/MPG stats …")
+        print("[yahoo_client]   Fetching FA GP/MPG stats (30d + 14d) …")
         gp_mpg = self._fetch_gp_mpg(fa_candidate_keys, "lastmonth")
+        gp_mpg_14 = self._fetch_gp_mpg(fa_candidate_keys, "biweekly")
 
         fas = []
         for pkey, info30 in ordered:
@@ -276,6 +281,7 @@ class YahooFantasyClient:
 
             info14 = self._cached_ranks_14.get(pkey, {})
             gm     = gp_mpg.get(pkey, {})
+            gm14   = gp_mpg_14.get(pkey, {})
 
             raw_status = info30.get("injury_status", "")
             status = raw_status if raw_status in INJURY_STATUSES else "healthy"
@@ -294,7 +300,9 @@ class YahooFantasyClient:
                 "yahoo_30day_rank": info30.get("rank", 999),
                 "yahoo_14day_rank": info14.get("rank", 999),
                 "mpg":             gm.get("mpg", 0.0),
+                "mpg_14d":         gm14.get("mpg", 0.0),
                 "games_last_30":   gm.get("gp", 0),
+                "games_last_14":   gm14.get("gp", 0),
                 "percent_owned":   info30.get("percent_owned", 0.0),
             })
 
