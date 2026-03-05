@@ -224,7 +224,7 @@ def scan_bench_upgrades(
     for fa in qualified_fas:
         fa_positions = fa.get("positions", [])
         fa_rank_14 = fa.get("yahoo_14day_rank", 999)
-        fa_mpg = fa.get("mpg", 0.0)
+        fa_mpg = fa.get("mpg_14d") or fa.get("mpg", 0.0)
         fa_bench_cat = _bench_category(fa_positions)
         fa_ht = fa.get("ht_score")
         fa_games = fa.get("games_remaining", 0)
